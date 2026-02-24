@@ -7,6 +7,10 @@
 #include <vector>
 #include <stdexcept>
 
+
+// check
+#include <stdexcept>
+
 namespace gemini {
 enum class Padding { VALID, SAME };
 
