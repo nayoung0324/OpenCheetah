@@ -103,15 +103,16 @@ int main()
     std::cout << "N=" << N
               << ", used_coeff_count=" << used_coeff_count
               << ", base_mismatches=" << mismatch_base << "\n";
-    const size_t sample_n = std::min<size_t>(10, used_coeff_count);
-    std::cout << "sample(base, first " << sample_n << ")\n";
-    for (size_t i = 0; i < sample_n; ++i) {
+    const size_t sample_begin = 33;
+    const size_t sample_end_excl = std::min<size_t>(43, used_coeff_count); // prints [33..42]
+    std::cout << "sample(base, idx " << sample_begin << "~" << (sample_end_excl - 1) << ")\n";
+    for (size_t i = sample_begin; i < sample_end_excl; ++i) {
         std::cout << "  [" << i << "] expected=" << expected_plain[i]
                   << ", decoded=" << decoded[i] << "\n";
     }
     std::cout << "mul_const=" << scalar << ", mul_mismatches=" << mismatch_mul << "\n";
-    std::cout << "sample(mul, first " << sample_n << ")\n";
-    for (size_t i = 0; i < sample_n; ++i) {
+    std::cout << "sample(mul, idx " << sample_begin << "~" << (sample_end_excl - 1) << ")\n";
+    for (size_t i = sample_begin; i < sample_end_excl; ++i) {
         const uint64_t prod_mod2k =
             (static_cast<unsigned __int128>(expected_plain[i]) * scalar) & ((1ULL << log_q) - 1ULL);
         const int64_t expected_mul = centered_from_mod2k_main(prod_mod2k, log_q);
