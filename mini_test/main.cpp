@@ -100,6 +100,23 @@ int main()
         }
     }
 
+    // Test: ciphertext + ciphertext (mod 2^k), then decrypt/decode again.
+    Ciphertext ct_add = ct;
+    add_ct_inplace_mod2k(ct_add, ct, log_q);
+
+    std::vector<int64_t> decoded_add =
+        decrypt_and_decode_nttfree(context, ct_add, sk_pt, log_q, delta_shift, used_coeff_count);
+
+    size_t mismatch_add = 0;
+    for (size_t i = 0; i < used_coeff_count; ++i) {
+        const uint64_t sum_mod2k =
+            (static_cast<unsigned __int128>(expected_plain[i]) + expected_plain[i]) & ((1ULL << log_q) - 1ULL);
+        const int64_t expected_add = centered_from_mod2k_main(sum_mod2k, log_q);
+        if (decoded_add[i] != expected_add) {
+            ++mismatch_add;
+        }
+    }
+
     std::cout << "N=" << N
               << ", used_coeff_count=" << used_coeff_count
               << ", base_mismatches=" << mismatch_base << "\n";
@@ -119,6 +136,15 @@ int main()
         std::cout << "  [" << i << "] expected_mul=" << expected_mul
                   << ", decoded_mul=" << decoded_mul[i] << "\n";
     }
+    std::cout << "add_ct_mismatches=" << mismatch_add << "\n";
+    std::cout << "sample(add, idx " << sample_begin << "~" << (sample_end_excl - 1) << ")\n";
+    for (size_t i = sample_begin; i < sample_end_excl; ++i) {
+        const uint64_t sum_mod2k =
+            (static_cast<unsigned __int128>(expected_plain[i]) + expected_plain[i]) & ((1ULL << log_q) - 1ULL);
+        const int64_t expected_add = centered_from_mod2k_main(sum_mod2k, log_q);
+        std::cout << "  [" << i << "] expected_add=" << expected_add
+                  << ", decoded_add=" << decoded_add[i] << "\n";
+    }
 
-    return (mismatch_base == 0 && mismatch_mul == 0) ? 0 : 1;
+    return (mismatch_base == 0 && mismatch_mul == 0 && mismatch_add == 0) ? 0 : 1;
 }
