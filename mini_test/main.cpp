@@ -117,16 +117,35 @@ int main()
         }
     }
 
+    // Test: ciphertext - ciphertext (mod 2^k), then decrypt/decode again.
+    Ciphertext ct_sub = ct;
+    sub_ct_inplace_mod2k(ct_sub, ct, log_q);
+
+    std::vector<int64_t> decoded_sub =
+        decrypt_and_decode_nttfree(context, ct_sub, sk_pt, log_q, delta_shift, used_coeff_count);
+
+    size_t mismatch_sub = 0;
+    for (size_t i = 0; i < used_coeff_count; ++i) {
+        const int64_t expected_sub = 0;
+        if (decoded_sub[i] != expected_sub) {
+            ++mismatch_sub;
+        }
+    }
+
+    const size_t sample_begin = 33;
+    const size_t sample_end_excl = std::min<size_t>(43, used_coeff_count); // prints [33..42]
+
+    std::cout << "[Test: Base Encrypt->Decrypt]\n";
     std::cout << "N=" << N
               << ", used_coeff_count=" << used_coeff_count
               << ", base_mismatches=" << mismatch_base << "\n";
-    const size_t sample_begin = 33;
-    const size_t sample_end_excl = std::min<size_t>(43, used_coeff_count); // prints [33..42]
     std::cout << "sample(base, idx " << sample_begin << "~" << (sample_end_excl - 1) << ")\n";
     for (size_t i = sample_begin; i < sample_end_excl; ++i) {
         std::cout << "  [" << i << "] expected=" << expected_plain[i]
                   << ", decoded=" << decoded[i] << "\n";
     }
+
+    std::cout << "[Test: ct * const]\n";
     std::cout << "mul_const=" << scalar << ", mul_mismatches=" << mismatch_mul << "\n";
     std::cout << "sample(mul, idx " << sample_begin << "~" << (sample_end_excl - 1) << ")\n";
     for (size_t i = sample_begin; i < sample_end_excl; ++i) {
@@ -136,6 +155,8 @@ int main()
         std::cout << "  [" << i << "] expected_mul=" << expected_mul
                   << ", decoded_mul=" << decoded_mul[i] << "\n";
     }
+
+    std::cout << "[Test: ct + ct]\n";
     std::cout << "add_ct_mismatches=" << mismatch_add << "\n";
     std::cout << "sample(add, idx " << sample_begin << "~" << (sample_end_excl - 1) << ")\n";
     for (size_t i = sample_begin; i < sample_end_excl; ++i) {
@@ -146,5 +167,13 @@ int main()
                   << ", decoded_add=" << decoded_add[i] << "\n";
     }
 
-    return (mismatch_base == 0 && mismatch_mul == 0 && mismatch_add == 0) ? 0 : 1;
+    std::cout << "[Test: ct - ct]\n";
+    std::cout << "sub_ct_mismatches=" << mismatch_sub << "\n";
+    std::cout << "sample(sub, idx " << sample_begin << "~" << (sample_end_excl - 1) << ")\n";
+    for (size_t i = sample_begin; i < sample_end_excl; ++i) {
+        std::cout << "  [" << i << "] expected_sub=0"
+                  << ", decoded_sub=" << decoded_sub[i] << "\n";
+    }
+
+    return (mismatch_base == 0 && mismatch_mul == 0 && mismatch_add == 0 && mismatch_sub == 0) ? 0 : 1;
 }
