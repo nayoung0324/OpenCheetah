@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <stdexcept>
 #include <vector>
 
 #include "decryption.h"
@@ -18,6 +19,36 @@ static inline int64_t centered_from_mod2k_main(uint64_t u, uint64_t log_q)
     u &= (q - 1ULL);
     if (u < half) return static_cast<int64_t>(u);
     return static_cast<int64_t>(u) - static_cast<int64_t>(q);
+}
+
+static std::vector<uint64_t> negacyclic_convolution_mod2k_main(
+    const std::vector<uint64_t> &a, const std::vector<uint64_t> &b, uint64_t log_q)
+{
+    if (a.size() != b.size()) throw std::invalid_argument("size mismatch");
+    const size_t n = a.size();
+    const uint64_t mask = (1ULL << log_q) - 1ULL;
+    std::vector<uint64_t> out(n, 0);
+
+    for (size_t i = 0; i < n; ++i) {
+        const uint64_t ai = a[i] & mask;
+        if (!ai) continue;
+        for (size_t j = 0; j < n; ++j) {
+            const uint64_t bj = b[j] & mask;
+            if (!bj) continue;
+            const uint64_t prod = static_cast<uint64_t>(static_cast<unsigned __int128>(ai) * bj) & mask;
+            size_t pos = i + j;
+            bool wrapped = false;
+            if (pos >= n) {
+                pos -= n;
+                wrapped = true;
+            }
+            if (!wrapped)
+                out[pos] = (out[pos] + prod) & mask;
+            else
+                out[pos] = (out[pos] - prod) & mask;
+        }
+    }
+    return out;
 }
 
 int main()
@@ -49,23 +80,33 @@ int main()
     SecretKey sk_obj = keygen.secret_key();
     const Plaintext &sk_pt = sk_obj.data();
 
-    // Build toy input image (NHWC flattened), then pad into polynomial layout.
+    // Build two toy input images (NHWC flattened), then pad into polynomial layout.
     std::vector<uint64_t> input_flat(static_cast<size_t>(H) * W * C, 0);
+    std::vector<uint64_t> input_flat2(static_cast<size_t>(H) * W * C, 0);
     for (size_t i = 0; i < input_flat.size(); ++i) {
-        input_flat[i] = static_cast<uint64_t>((i % 13) + 1); // small positive payload
+        input_flat[i] = static_cast<uint64_t>((i % 13) + 1);        // payload #1
+        input_flat2[i] = static_cast<uint64_t>(((i * 3) % 17) + 2); // payload #2
     }
 
     std::vector<uint64_t> padded = pad_same_to_poly_n(input_flat, H, W, C, kernel_k, static_cast<int>(N));
-    std::vector<uint64_t> expected_plain = padded; // reference before scaling
+    std::vector<uint64_t> padded2 = pad_same_to_poly_n(input_flat2, H, W, C, kernel_k, static_cast<int>(N));
+    std::vector<uint64_t> expected_plain = padded;   // reference #1 before scaling
+    std::vector<uint64_t> expected_plain2 = padded2; // reference #2 before scaling
 
     // Encode: scale by Delta and serialize to coeff-form plaintext.
     scale_by_pow2_inplace(padded, delta_shift, static_cast<int>(log_q));
+    scale_by_pow2_inplace(padded2, delta_shift, static_cast<int>(log_q));
     Plaintext m_pt = vector_to_plaintext_coeff(padded, N, static_cast<int>(log_q));
+    Plaintext m_pt2 = vector_to_plaintext_coeff(padded2, N, static_cast<int>(log_q));
 
     // Encrypt: first encrypt zero, then inject message into c0 (RLWE form).
     Ciphertext ct;
     encrypt_zero_nttfree(context, ct, sk_pt, log_q);
     add_plain_to_ct_inplace_mod2k(ct, m_pt, log_q);
+
+    Ciphertext ct2;
+    encrypt_zero_nttfree(context, ct2, sk_pt, log_q);
+    add_plain_to_ct_inplace_mod2k(ct2, m_pt2, log_q);
 
     // Decrypt + decode with same (k, Delta) parameters.
     const int Hpad = H + (kernel_k - 1);
@@ -117,18 +158,40 @@ int main()
         }
     }
 
-    // Test: ciphertext - ciphertext (mod 2^k), then decrypt/decode again.
+    // Test: ciphertext #1 - ciphertext #2 (mod 2^k), then decrypt/decode again.
     Ciphertext ct_sub = ct;
-    sub_ct_inplace_mod2k(ct_sub, ct, log_q);
+    sub_ct_inplace_mod2k(ct_sub, ct2, log_q);
 
     std::vector<int64_t> decoded_sub =
         decrypt_and_decode_nttfree(context, ct_sub, sk_pt, log_q, delta_shift, used_coeff_count);
 
     size_t mismatch_sub = 0;
     for (size_t i = 0; i < used_coeff_count; ++i) {
-        const int64_t expected_sub = 0;
+        const uint64_t diff_mod2k =
+            (static_cast<unsigned __int128>(expected_plain[i]) + ((1ULL << log_q) - expected_plain2[i])) &
+            ((1ULL << log_q) - 1ULL);
+        const int64_t expected_sub = centered_from_mod2k_main(diff_mod2k, log_q);
         if (decoded_sub[i] != expected_sub) {
             ++mismatch_sub;
+        }
+    }
+
+    // Test: plaintext * ciphertext (mod 2^k), then decrypt/decode again.
+    // Use unscaled pt2 so decode stays in the same plaintext domain.
+    Plaintext pt_mul = vector_to_plaintext_coeff(expected_plain2, N, static_cast<int>(log_q));
+    Ciphertext ct_ptmul = ct;
+    mul_plain_to_ct_inplace_mod2k(ct_ptmul, pt_mul, log_q);
+
+    std::vector<int64_t> decoded_ptmul =
+        decrypt_and_decode_nttfree(context, ct_ptmul, sk_pt, log_q, delta_shift, used_coeff_count);
+
+    const std::vector<uint64_t> expected_ptmul_mod2k =
+        negacyclic_convolution_mod2k_main(expected_plain, expected_plain2, log_q);
+    size_t mismatch_ptmul = 0;
+    for (size_t i = 0; i < used_coeff_count; ++i) {
+        const int64_t expected_ptmul = centered_from_mod2k_main(expected_ptmul_mod2k[i], log_q);
+        if (decoded_ptmul[i] != expected_ptmul) {
+            ++mismatch_ptmul;
         }
     }
 
@@ -167,13 +230,29 @@ int main()
                   << ", decoded_add=" << decoded_add[i] << "\n";
     }
 
-    std::cout << "[Test: ct - ct]\n";
+    std::cout << "[Test: ct1 - ct2]\n";
     std::cout << "sub_ct_mismatches=" << mismatch_sub << "\n";
     std::cout << "sample(sub, idx " << sample_begin << "~" << (sample_end_excl - 1) << ")\n";
     for (size_t i = sample_begin; i < sample_end_excl; ++i) {
-        std::cout << "  [" << i << "] expected_sub=0"
+        const uint64_t diff_mod2k =
+            (static_cast<unsigned __int128>(expected_plain[i]) + ((1ULL << log_q) - expected_plain2[i])) &
+            ((1ULL << log_q) - 1ULL);
+        const int64_t expected_sub = centered_from_mod2k_main(diff_mod2k, log_q);
+        std::cout << "  [" << i << "] expected_sub=" << expected_sub
                   << ", decoded_sub=" << decoded_sub[i] << "\n";
     }
 
-    return (mismatch_base == 0 && mismatch_mul == 0 && mismatch_add == 0 && mismatch_sub == 0) ? 0 : 1;
+    std::cout << "[Test: pt * ct]\n";
+    std::cout << "pt_mul_ct_mismatches=" << mismatch_ptmul << "\n";
+    std::cout << "sample(pt*ct, idx " << sample_begin << "~" << (sample_end_excl - 1) << ")\n";
+    for (size_t i = sample_begin; i < sample_end_excl; ++i) {
+        const int64_t expected_ptmul = centered_from_mod2k_main(expected_ptmul_mod2k[i], log_q);
+        std::cout << "  [" << i << "] expected_ptmul=" << expected_ptmul
+                  << ", decoded_ptmul=" << decoded_ptmul[i] << "\n";
+    }
+
+    return (mismatch_base == 0 && mismatch_mul == 0 && mismatch_add == 0 && mismatch_sub == 0 &&
+            mismatch_ptmul == 0)
+               ? 0
+               : 1;
 }
