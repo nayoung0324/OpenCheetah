@@ -36,3 +36,10 @@ std::vector<int64_t> conv2d_reference_poly_cheetah_valid(
     size_t KH,
     size_t KW,
     size_t N);
+
+// Collect valid output coefficient indices for Cheetah-style conv layout.
+std::vector<size_t> cheetah_valid_output_indices(size_t H, size_t W, size_t KH, size_t KW, size_t N);
+
+// Build 0/1 plaintext mask at valid indices (for extract via multiply_plain).
+seal::Plaintext build_extract_mask_plain(
+    const std::vector<size_t> &valid_indices, size_t N, uint64_t plain_modulus);

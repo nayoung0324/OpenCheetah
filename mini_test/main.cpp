@@ -64,6 +64,9 @@ int main()
     // PMult-based conv: one multiply_plain computes polynomial-domain convolution.
     Ciphertext conv_ct = image_ct;
     evaluator.multiply_plain_inplace(conv_ct, kernel_pt);
+    const std::vector<size_t> valid_indices = cheetah_valid_output_indices(H, W, KH, KW, N);
+    Plaintext extract_mask_pt = build_extract_mask_plain(valid_indices, N, plain_mod);
+    evaluator.multiply_plain_inplace(conv_ct, extract_mask_pt); // Extract: keep only valid coeffs.
 
     Plaintext conv_pt;
     decryptor.decrypt(conv_ct, conv_pt);
@@ -76,13 +79,10 @@ int main()
 
     size_t valid_count = 0;
     size_t valid_mismatches = 0;
-    for (size_t r = 0; r + KH <= H; ++r) {
-        for (size_t c = 0; c + KW <= W; ++c) {
-            const size_t i = out_base + r * W + c;
-            ++valid_count;
-            const int64_t got = decode_plain_coeff_to_signed(coeff_at(i), plain_mod);
-            if (got != ref_poly[i]) ++valid_mismatches;
-        }
+    for (size_t i : valid_indices) {
+        ++valid_count;
+        const int64_t got = decode_plain_coeff_to_signed(coeff_at(i), plain_mod);
+        if (got != ref_poly[i]) ++valid_mismatches;
     }
 
     // Optional sanity signal for non-extracted coefficients (not used for correctness).
@@ -110,7 +110,7 @@ int main()
     size_t printed = 0;
     for (size_t r = 0; r + KH <= H && printed < 12; ++r) {
         for (size_t c = 0; c + KW <= W && printed < 12; ++c) {
-            const size_t idx = out_base + r * W + c;
+            const size_t idx = out_base + r * W + c; // same as valid_indices order
             const int64_t got = decode_plain_coeff_to_signed(coeff_at(idx), plain_mod);
             const int64_t exp = ref_poly[idx];
             std::cout << "  [" << idx << "] expected=" << exp << ", got=" << got << "\n";

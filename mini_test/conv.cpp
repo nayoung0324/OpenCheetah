@@ -111,3 +111,38 @@ std::vector<int64_t> conv2d_reference_poly_cheetah_valid(
     }
     return out;
 }
+
+std::vector<size_t> cheetah_valid_output_indices(size_t H, size_t W, size_t KH, size_t KW, size_t N)
+{
+    if (H == 0 || W == 0 || KH == 0 || KW == 0 || N == 0) {
+        throw std::invalid_argument("H/W/KH/KW/N must be non-zero");
+    }
+    if (H < KH || W < KW) return {};
+
+    const size_t begin = cheetah_filter_base_index(KH, KW, W);
+    std::vector<size_t> out;
+    out.reserve((H - KH + 1) * (W - KW + 1));
+
+    for (size_t r = 0; r + KH <= H; ++r) {
+        for (size_t c = 0; c + KW <= W; ++c) {
+            const size_t idx = begin + r * W + c;
+            if (idx >= N) throw std::invalid_argument("valid index exceeds polynomial degree");
+            out.push_back(idx);
+        }
+    }
+    return out;
+}
+
+seal::Plaintext build_extract_mask_plain(
+    const std::vector<size_t> &valid_indices, size_t N, uint64_t plain_modulus)
+{
+    if (!plain_modulus) throw std::invalid_argument("plain_modulus must be non-zero");
+    seal::Plaintext pt;
+    pt.resize(N);
+    for (size_t i = 0; i < N; ++i) pt[i] = 0;
+    for (size_t idx : valid_indices) {
+        if (idx >= N) throw std::invalid_argument("valid index out of range");
+        pt[idx] = 1 % plain_modulus;
+    }
+    return pt;
+}
