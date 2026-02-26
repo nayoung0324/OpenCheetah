@@ -170,15 +170,14 @@ void extract_valid_coeffs_inplace(
     std::sort(keep.begin(), keep.end());
     keep.erase(std::unique(keep.begin(), keep.end()), keep.end());
 
-    for (size_t comp = 0; comp < ct.size(); ++comp) {
-        uint64_t *comp_rns = ct.data(comp);
-        for (size_t idx = 0; idx < N; ++idx) {
-            if (std::binary_search(keep.begin(), keep.end(), idx)) continue;
-            uint64_t *ptr = comp_rns + idx;
-            for (size_t l = 0; l < L; ++l) {
-                *ptr = 0;
-                ptr += N;
-            }
+    // Cheetah-style extract: zero-out only c0 coefficients.
+    uint64_t *c0_rns = ct.data(0);
+    for (size_t idx = 0; idx < N; ++idx) {
+        if (std::binary_search(keep.begin(), keep.end(), idx)) continue;
+        uint64_t *ptr = c0_rns + idx;
+        for (size_t l = 0; l < L; ++l) {
+            *ptr = 0;
+            ptr += N;
         }
     }
 }
