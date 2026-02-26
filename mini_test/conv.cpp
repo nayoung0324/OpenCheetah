@@ -1,5 +1,6 @@
 #include "conv.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace
@@ -145,4 +146,37 @@ seal::Plaintext build_extract_mask_plain(
         pt[idx] = 1 % plain_modulus;
     }
     return pt;
+}
+
+void extract_valid_coeffs_inplace(
+    seal::Ciphertext &ct, const seal::Evaluator &evaluator, const std::vector<size_t> &valid_indices)
+{
+    if (ct.size() == 0) return;
+    const size_t N = ct.poly_modulus_degree();
+    const size_t L = ct.coeff_modulus_size();
+
+    if (valid_indices.empty() || valid_indices.size() > N) {
+        throw std::invalid_argument("invalid valid_indices");
+    }
+    if (std::any_of(valid_indices.begin(), valid_indices.end(), [N](size_t c) { return c >= N; })) {
+        throw std::invalid_argument("valid index out of range");
+    }
+
+    if (ct.is_ntt_form()) {
+        evaluator.transform_from_ntt_inplace(ct);
+    }
+
+    std::vector<size_t> keep = valid_indices;
+    std::sort(keep.begin(), keep.end());
+    keep.erase(std::unique(keep.begin(), keep.end()), keep.end());
+
+    uint64_t *c0_rns = ct.data(0);
+    for (size_t idx = 0; idx < N; ++idx) {
+        if (std::binary_search(keep.begin(), keep.end(), idx)) continue;
+        uint64_t *ptr = c0_rns + idx;
+        for (size_t l = 0; l < L; ++l) {
+            *ptr = 0;
+            ptr += N;
+        }
+    }
 }

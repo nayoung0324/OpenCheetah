@@ -43,3 +43,9 @@ std::vector<size_t> cheetah_valid_output_indices(size_t H, size_t W, size_t KH, 
 // Build 0/1 plaintext mask at valid indices (for extract via multiply_plain).
 seal::Plaintext build_extract_mask_plain(
     const std::vector<size_t> &valid_indices, size_t N, uint64_t plain_modulus);
+
+// Cheetah-style extract:
+// Keep only valid coefficients in ciphertext; set all others to zero.
+// If ciphertext is in NTT form, transform back before zeroing coefficients.
+void extract_valid_coeffs_inplace(
+    seal::Ciphertext &ct, const seal::Evaluator &evaluator, const std::vector<size_t> &valid_indices);

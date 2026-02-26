@@ -65,8 +65,7 @@ int main()
     Ciphertext conv_ct = image_ct;
     evaluator.multiply_plain_inplace(conv_ct, kernel_pt);
     const std::vector<size_t> valid_indices = cheetah_valid_output_indices(H, W, KH, KW, N);
-    Plaintext extract_mask_pt = build_extract_mask_plain(valid_indices, N, plain_mod);
-    evaluator.multiply_plain_inplace(conv_ct, extract_mask_pt); // Extract: keep only valid coeffs.
+    extract_valid_coeffs_inplace(conv_ct, evaluator, valid_indices);
 
     Plaintext conv_pt;
     decryptor.decrypt(conv_ct, conv_pt);
