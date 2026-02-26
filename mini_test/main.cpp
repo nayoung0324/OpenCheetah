@@ -1,39 +1,25 @@
-// mini_test/main.cpp
 #include <seal/seal.h>
 
-#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <random>
 #include <vector>
 
-#include "encryption.h"
-#include "util.h"
+#include "conv.h"
 
 using namespace seal;
-using Clock = std::chrono::high_resolution_clock;
-
-template <typename Fn>
-static double time_op_us(Fn &&fn, int iters)
-{
-    const auto t0 = Clock::now();
-    for (int i = 0; i < iters; ++i) fn();
-    const auto t1 = Clock::now();
-    return static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
-}
 
 int main()
 {
     constexpr size_t N = 2048;
-    constexpr uint64_t log_q = 50;
-    constexpr int delta_shift = 20;
-    constexpr uint64_t scalar = 3;
-    constexpr int iters = 5000;
-    constexpr int iters_ptct = 50;
+    constexpr size_t H = 32;
+    constexpr size_t W = 32;
+    constexpr size_t KH = 3;
+    constexpr size_t KW = 3;
 
     EncryptionParameters parms(scheme_type::bfv);
     parms.set_poly_modulus_degree(N);
-    parms.set_coeff_modulus(CoeffModulus::Create(N, { 50 })); // single coeff modulus
+    parms.set_coeff_modulus(CoeffModulus::Create(N, { 50 }));
     parms.set_plain_modulus(PlainModulus::Batching(N, 20));
 
     SEALContext context(parms);
@@ -43,107 +29,91 @@ int main()
         return 2;
     }
 
+    const uint64_t plain_mod = parms.plain_modulus().value();
+
     KeyGenerator keygen(context);
-    SecretKey sk_obj = keygen.secret_key();
-    const Plaintext &sk_pt = sk_obj.data();
+    SecretKey sk = keygen.secret_key();
     PublicKey pk;
     keygen.create_public_key(pk);
-
-    // Full-N data (no padding), reproducible random.
-    std::mt19937_64 rng(20260226ULL);
-    std::uniform_int_distribution<uint64_t> dist(0, 15);
-    std::vector<uint64_t> m1(N, 0), m2(N, 0);
-    for (size_t i = 0; i < N; ++i) {
-        m1[i] = dist(rng);
-        m2[i] = dist(rng);
-    }
-
-    // ----- custom mod2k setup (not timed) -----
-    std::vector<uint64_t> m1_scaled = m1, m2_scaled = m2;
-    scale_by_pow2_inplace(m1_scaled, delta_shift, static_cast<int>(log_q));
-    scale_by_pow2_inplace(m2_scaled, delta_shift, static_cast<int>(log_q));
-    Plaintext pt1_mod2k = vector_to_plaintext_coeff(m1_scaled, N, static_cast<int>(log_q));
-    Plaintext pt2_mod2k = vector_to_plaintext_coeff(m2_scaled, N, static_cast<int>(log_q));
-
-    Ciphertext ct1_mod2k, ct2_mod2k;
-    encrypt_zero_nttfree(context, ct1_mod2k, sk_pt, log_q);
-    add_plain_to_ct_inplace_mod2k(ct1_mod2k, pt1_mod2k, log_q);
-    encrypt_zero_nttfree(context, ct2_mod2k, sk_pt, log_q);
-    add_plain_to_ct_inplace_mod2k(ct2_mod2k, pt2_mod2k, log_q);
-
-    // ----- SEAL setup (not timed) -----
-    BatchEncoder batch_encoder(context);
     Encryptor encryptor(context, pk);
     Evaluator evaluator(context);
+    Decryptor decryptor(context, sk);
 
-    std::vector<uint64_t> slots1(batch_encoder.slot_count(), 0), slots2(batch_encoder.slot_count(), 0);
-    for (size_t i = 0; i < N; ++i) {
-        slots1[i] = m1[i];
-        slots2[i] = m2[i];
+    // Reproducible small integer input/kernel to avoid wrap in plain modulus.
+    std::mt19937_64 rng(20260226ULL);
+    std::uniform_int_distribution<int> img_dist(0, 7);
+
+    std::vector<int64_t> image(H * W, 0);
+    for (size_t i = 0; i < image.size(); ++i) {
+        image[i] = img_dist(rng);
     }
-    Plaintext pt1_seal, pt2_seal;
-    batch_encoder.encode(slots1, pt1_seal);
-    batch_encoder.encode(slots2, pt2_seal);
 
-    Ciphertext ct1_seal, ct2_seal;
-    encryptor.encrypt(pt1_seal, ct1_seal);
-    encryptor.encrypt(pt2_seal, ct2_seal);
+    // Example 3x3 kernel (coefficient encoding / PMult style).
+    std::vector<int64_t> kernel = {
+        1, 0, -1,
+        2, 0, -2,
+        1, 0, -1
+    };
 
-    // constant plaintext for multiply_plain_inplace
-    Plaintext scalar_pt;
-    scalar_pt.resize(N);
-    scalar_pt[0] = scalar;
-    for (size_t i = 1; i < N; ++i) scalar_pt[i] = 0;
+    Plaintext image_pt = encode_image_coeff_plain(image, H, W, N, plain_mod);
+    Plaintext kernel_pt = build_conv_kernel_plain(kernel, KH, KW, W, N, plain_mod);
 
-    // ----- timing: ct+ct -----
-    Ciphertext w_add_mod2k_orig = ct1_mod2k;
-    const double add_mod2k_orig_us =
-        time_op_us([&]() { add_ct_inplace_mod2k(w_add_mod2k_orig, ct2_mod2k, log_q); }, iters);
+    Ciphertext image_ct;
+    encryptor.encrypt(image_pt, image_ct);
 
-    Ciphertext w_add_mod2k_fast = ct1_mod2k;
-    const double add_mod2k_fast_us =
-        time_op_us([&]() { add_ct_inplace_mod2k_fast(w_add_mod2k_fast, ct2_mod2k, log_q); }, iters);
+    // PMult-based conv: one multiply_plain computes polynomial-domain convolution.
+    Ciphertext conv_ct = image_ct;
+    evaluator.multiply_plain_inplace(conv_ct, kernel_pt);
 
-    Ciphertext w_add_seal = ct1_seal;
-    const double add_seal_us = time_op_us([&]() { evaluator.add_inplace(w_add_seal, ct2_seal); }, iters);
+    Plaintext conv_pt;
+    decryptor.decrypt(conv_ct, conv_pt);
 
-    // ----- timing: ct*const -----
-    Ciphertext w_mulc_mod2k = ct1_mod2k;
-    const double mulc_mod2k_us =
-        time_op_us([&]() { mul_const_ct_inplace_mod2k(w_mulc_mod2k, scalar, log_q); }, iters);
+    const size_t out_base = cheetah_filter_base_index(KH, KW, W);
+    std::vector<int64_t> ref_poly = conv2d_reference_poly_cheetah_valid(image, H, W, kernel, KH, KW, N);
 
-    Ciphertext w_mulc_seal = ct1_seal;
-    const double mulc_seal_us =
-        time_op_us([&]() { evaluator.multiply_plain_inplace(w_mulc_seal, scalar_pt); }, iters);
+    size_t valid_count = 0;
+    size_t valid_mismatches = 0;
+    for (size_t r = 0; r + KH <= H; ++r) {
+        for (size_t c = 0; c + KW <= W; ++c) {
+            const size_t i = out_base + r * W + c;
+            ++valid_count;
+            const int64_t got = decode_plain_coeff_to_signed(conv_pt[i], plain_mod);
+            if (got != ref_poly[i]) ++valid_mismatches;
+        }
+    }
 
-    // ----- timing: pt*ct -----
-    Ciphertext w_ptmul_mod2k = ct1_mod2k;
-    const double ptmul_mod2k_us =
-        time_op_us([&]() { mul_plain_to_ct_inplace_mod2k(w_ptmul_mod2k, pt2_mod2k, log_q); }, iters_ptct);
+    // Optional sanity signal for non-extracted coefficients (not used for correctness).
+    size_t nonvalid_nonzero = 0;
+    for (size_t i = 0; i < N; ++i) {
+        bool is_valid = false;
+        if (i >= out_base) {
+            const size_t rel = i - out_base;
+            const size_t rr = rel / W;
+            const size_t cc = rel % W;
+            is_valid = (rr + KH <= H) && (cc + KW <= W);
+        }
+        if (is_valid) continue;
+        const int64_t got = decode_plain_coeff_to_signed(conv_pt[i], plain_mod);
+        if (got != 0) ++nonvalid_nonzero;
+    }
 
-    Ciphertext w_ptmul_seal = ct1_seal;
-    const double ptmul_seal_us =
-        time_op_us([&]() { evaluator.multiply_plain_inplace(w_ptmul_seal, pt2_seal); }, iters_ptct);
+    std::cout << "[SEAL coefficient-encoding conv via PMult]\n";
+    std::cout << "N=" << N << ", HxW=" << H << "x" << W << ", K=" << KH << "x" << KW
+              << ", out_base=" << out_base << ", valid_count=" << valid_count
+              << ", valid_mismatches=" << valid_mismatches
+              << ", nonvalid_nonzero=" << nonvalid_nonzero << "\n";
 
-    const uint64_t checksum = w_add_mod2k_orig.data(0)[0] ^ w_add_mod2k_fast.data(0)[1] ^ w_mulc_mod2k.data(0)[2] ^
-                              w_add_seal.data(0)[3] ^ w_mulc_seal.data(0)[4] ^ w_ptmul_mod2k.data(0)[5] ^
-                              w_ptmul_seal.data(0)[6];
-
-    std::cout << "[Speed Comparison: custom _mod2k vs SEAL(NTT)]\n";
-    std::cout << "N=" << N << ", log_q=" << log_q << ", iters=" << iters << ", iters_ptct=" << iters_ptct << "\n";
-    std::cout << "op=ct+ct\n";
-    std::cout << "  custom_mod2k_orig total_us=" << add_mod2k_orig_us << ", avg_us=" << (add_mod2k_orig_us / iters)
-              << "\n";
-    std::cout << "  custom_mod2k_fast total_us=" << add_mod2k_fast_us << ", avg_us=" << (add_mod2k_fast_us / iters)
-              << "\n";
-    std::cout << "  seal_ntt     total_us=" << add_seal_us << ", avg_us=" << (add_seal_us / iters) << "\n";
-    std::cout << "op=ct*const (const=" << scalar << ")\n";
-    std::cout << "  custom_mod2k total_us=" << mulc_mod2k_us << ", avg_us=" << (mulc_mod2k_us / iters) << "\n";
-    std::cout << "  seal_ntt     total_us=" << mulc_seal_us << ", avg_us=" << (mulc_seal_us / iters) << "\n";
-    std::cout << "op=pt*ct\n";
-    std::cout << "  custom_mod2k total_us=" << ptmul_mod2k_us << ", avg_us=" << (ptmul_mod2k_us / iters_ptct) << "\n";
-    std::cout << "  seal_ntt     total_us=" << ptmul_seal_us << ", avg_us=" << (ptmul_seal_us / iters_ptct) << "\n";
-    std::cout << "checksum=" << checksum << "\n";
+    std::cout << "sample(valid outputs, first 12)\n";
+    size_t printed = 0;
+    for (size_t r = 0; r + KH <= H && printed < 12; ++r) {
+        for (size_t c = 0; c + KW <= W && printed < 12; ++c) {
+            const size_t idx = out_base + r * W + c;
+            const int64_t got = decode_plain_coeff_to_signed(conv_pt[idx], plain_mod);
+            const int64_t exp = ref_poly[idx];
+            std::cout << "  [" << idx << "] expected=" << exp << ", got=" << got << "\n";
+            ++printed;
+        }
+    }
 
     return 0;
 }
