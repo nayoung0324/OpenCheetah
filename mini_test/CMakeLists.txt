@@ -16,3 +16,11 @@ add_executable(mini_seal
   decryption.cpp
 )
 target_link_libraries(mini_seal PRIVATE SEAL::seal)
+
+add_executable(mini_seal_functionality
+  operation_funcationality_test_main.cpp
+  util.cpp
+  encryption.cpp
+  decryption.cpp
+)
+target_link_libraries(mini_seal_functionality PRIVATE SEAL::seal)
