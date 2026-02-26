@@ -67,6 +67,9 @@ int main()
 
     Plaintext conv_pt;
     decryptor.decrypt(conv_ct, conv_pt);
+    const auto coeff_at = [&](size_t idx) -> uint64_t {
+        return (idx < conv_pt.coeff_count()) ? conv_pt[idx] : 0ULL;
+    };
 
     const size_t out_base = cheetah_filter_base_index(KH, KW, W);
     std::vector<int64_t> ref_poly = conv2d_reference_poly_cheetah_valid(image, H, W, kernel, KH, KW, N);
@@ -77,7 +80,7 @@ int main()
         for (size_t c = 0; c + KW <= W; ++c) {
             const size_t i = out_base + r * W + c;
             ++valid_count;
-            const int64_t got = decode_plain_coeff_to_signed(conv_pt[i], plain_mod);
+            const int64_t got = decode_plain_coeff_to_signed(coeff_at(i), plain_mod);
             if (got != ref_poly[i]) ++valid_mismatches;
         }
     }
@@ -93,7 +96,7 @@ int main()
             is_valid = (rr + KH <= H) && (cc + KW <= W);
         }
         if (is_valid) continue;
-        const int64_t got = decode_plain_coeff_to_signed(conv_pt[i], plain_mod);
+        const int64_t got = decode_plain_coeff_to_signed(coeff_at(i), plain_mod);
         if (got != 0) ++nonvalid_nonzero;
     }
 
@@ -108,7 +111,7 @@ int main()
     for (size_t r = 0; r + KH <= H && printed < 12; ++r) {
         for (size_t c = 0; c + KW <= W && printed < 12; ++c) {
             const size_t idx = out_base + r * W + c;
-            const int64_t got = decode_plain_coeff_to_signed(conv_pt[idx], plain_mod);
+            const int64_t got = decode_plain_coeff_to_signed(coeff_at(idx), plain_mod);
             const int64_t exp = ref_poly[idx];
             std::cout << "  [" << idx << "] expected=" << exp << ", got=" << got << "\n";
             ++printed;
