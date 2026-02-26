@@ -95,8 +95,13 @@ int main()
     for (size_t i = 1; i < N; ++i) scalar_pt[i] = 0;
 
     // ----- timing: ct+ct -----
-    Ciphertext w_add_mod2k = ct1_mod2k;
-    const double add_mod2k_us = time_op_us([&]() { add_ct_inplace_mod2k(w_add_mod2k, ct2_mod2k, log_q); }, iters);
+    Ciphertext w_add_mod2k_orig = ct1_mod2k;
+    const double add_mod2k_orig_us =
+        time_op_us([&]() { add_ct_inplace_mod2k(w_add_mod2k_orig, ct2_mod2k, log_q); }, iters);
+
+    Ciphertext w_add_mod2k_fast = ct1_mod2k;
+    const double add_mod2k_fast_us =
+        time_op_us([&]() { add_ct_inplace_mod2k_fast(w_add_mod2k_fast, ct2_mod2k, log_q); }, iters);
 
     Ciphertext w_add_seal = ct1_seal;
     const double add_seal_us = time_op_us([&]() { evaluator.add_inplace(w_add_seal, ct2_seal); }, iters);
@@ -110,13 +115,16 @@ int main()
     const double mulc_seal_us =
         time_op_us([&]() { evaluator.multiply_plain_inplace(w_mulc_seal, scalar_pt); }, iters);
 
-    const uint64_t checksum =
-        w_add_mod2k.data(0)[0] ^ w_mulc_mod2k.data(0)[1] ^ w_add_seal.data(0)[2] ^ w_mulc_seal.data(0)[3];
+    const uint64_t checksum = w_add_mod2k_orig.data(0)[0] ^ w_add_mod2k_fast.data(0)[1] ^ w_mulc_mod2k.data(0)[2] ^
+                              w_add_seal.data(0)[3] ^ w_mulc_seal.data(0)[4];
 
     std::cout << "[Speed Comparison: custom _mod2k vs SEAL(NTT)]\n";
     std::cout << "N=" << N << ", log_q=" << log_q << ", iters=" << iters << "\n";
     std::cout << "op=ct+ct\n";
-    std::cout << "  custom_mod2k total_us=" << add_mod2k_us << ", avg_us=" << (add_mod2k_us / iters) << "\n";
+    std::cout << "  custom_mod2k_orig total_us=" << add_mod2k_orig_us << ", avg_us=" << (add_mod2k_orig_us / iters)
+              << "\n";
+    std::cout << "  custom_mod2k_fast total_us=" << add_mod2k_fast_us << ", avg_us=" << (add_mod2k_fast_us / iters)
+              << "\n";
     std::cout << "  seal_ntt     total_us=" << add_seal_us << ", avg_us=" << (add_seal_us / iters) << "\n";
     std::cout << "op=ct*const (const=" << scalar << ")\n";
     std::cout << "  custom_mod2k total_us=" << mulc_mod2k_us << ", avg_us=" << (mulc_mod2k_us / iters) << "\n";

@@ -113,7 +113,7 @@ void add_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &
     const uint64_t mask = (1ULL << log_q) - 1ULL;
     uint64_t *c0 = ct.data(0);
     for (size_t i = 0; i < pt.coeff_count(); ++i) {
-        c0[i] = ((c0[i] & mask) + (pt[i] & mask)) & mask;
+        c0[i] = (c0[i] + pt[i]) & mask;
     }
 }
 
@@ -126,7 +126,7 @@ void sub_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &
     const uint64_t mask = (1ULL << log_q) - 1ULL;
     uint64_t *c0 = ct.data(0);
     for (size_t i = 0; i < pt.coeff_count(); ++i) {
-        c0[i] = ((c0[i] & mask) - (pt[i] & mask)) & mask;
+        c0[i] = (c0[i] - pt[i]) & mask;
     }
 }
 
@@ -145,7 +145,41 @@ void add_ct_inplace_mod2k(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_s
         uint64_t *dst = ct_dst.data(comp);
         const uint64_t *src = ct_src.data(comp);
         for (size_t i = 0; i < n; ++i) {
-            dst[i] = ((dst[i] & mask) + (src[i] & mask)) & mask;
+            dst[i] = (dst[i] + src[i]) & mask;
+        }
+    }
+}
+
+void add_ct_inplace_mod2k_fast(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_src, uint64_t log_q)
+{
+    if (ct_dst.size() != ct_src.size()) throw std::invalid_argument("ciphertext size mismatch");
+    if (ct_dst.poly_modulus_degree() != ct_src.poly_modulus_degree()) {
+        throw std::invalid_argument("ciphertext poly_modulus_degree mismatch");
+    }
+    if (log_q == 0 || log_q > 62) throw std::invalid_argument("log_q must be in [1,62]");
+
+    const uint64_t mask = (1ULL << log_q) - 1ULL;
+    const size_t n = ct_dst.poly_modulus_degree();
+
+    for (size_t comp = 0; comp < ct_dst.size(); ++comp) {
+        uint64_t *dst = ct_dst.data(comp);
+        const uint64_t *src = ct_src.data(comp);
+
+        // Fallback when aliased.
+        if (dst == src) {
+            for (size_t i = 0; i < n; ++i) dst[i] = (dst[i] + src[i]) & mask;
+            continue;
+        }
+
+        size_t i = 0;
+        for (; i + 4 <= n; i += 4) {
+            dst[i + 0] = (dst[i + 0] + src[i + 0]) & mask;
+            dst[i + 1] = (dst[i + 1] + src[i + 1]) & mask;
+            dst[i + 2] = (dst[i + 2] + src[i + 2]) & mask;
+            dst[i + 3] = (dst[i + 3] + src[i + 3]) & mask;
+        }
+        for (; i < n; ++i) {
+            dst[i] = (dst[i] + src[i]) & mask;
         }
     }
 }
@@ -165,7 +199,7 @@ void sub_ct_inplace_mod2k(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_s
         uint64_t *dst = ct_dst.data(comp);
         const uint64_t *src = ct_src.data(comp);
         for (size_t i = 0; i < n; ++i) {
-            dst[i] = ((dst[i] & mask) - (src[i] & mask)) & mask;
+            dst[i] = (dst[i] - src[i]) & mask;
         }
     }
 }
@@ -182,7 +216,7 @@ void mul_const_ct_inplace_mod2k(seal::Ciphertext &ct, uint64_t scalar, uint64_t 
     for (size_t comp = 0; comp < ct.size(); ++comp) {
         uint64_t *ci = ct.data(comp);
         for (size_t i = 0; i < n; ++i) {
-            const unsigned __int128 prod = static_cast<unsigned __int128>(ci[i] & mask) * a;
+            const unsigned __int128 prod = static_cast<unsigned __int128>(ci[i]) * a;
             ci[i] = static_cast<uint64_t>(prod) & mask;
         }
     }
