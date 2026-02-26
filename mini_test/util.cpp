@@ -1,7 +1,6 @@
 #include "util.h"
 
 #include <seal/seal.h>
-#include <seal/util/iterator.h>
 
 #include <stdexcept>
 #include <vector>
@@ -182,25 +181,6 @@ void add_ct_inplace_mod2k_fast(seal::Ciphertext &ct_dst, const seal::Ciphertext 
         for (; i < n; ++i) {
             dst[i] = (dst[i] + src[i]) & mask;
         }
-    }
-}
-
-void add_ct_inplace_mod2k_seal_iter(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_src, uint64_t log_q)
-{
-    if (ct_dst.size() != ct_src.size()) throw std::invalid_argument("ciphertext size mismatch");
-    if (ct_dst.poly_modulus_degree() != ct_src.poly_modulus_degree()) {
-        throw std::invalid_argument("ciphertext poly_modulus_degree mismatch");
-    }
-    if (log_q == 0 || log_q > 62) throw std::invalid_argument("log_q must be in [1,62]");
-
-    const uint64_t mask = (1ULL << log_q) - 1ULL;
-    const size_t n = ct_dst.poly_modulus_degree();
-    using std::get;
-
-    for (size_t comp = 0; comp < ct_dst.size(); ++comp) {
-        uint64_t *dst = ct_dst.data(comp);
-        const uint64_t *src = ct_src.data(comp);
-        SEAL_ITERATE(seal::util::iter(dst, src), n, [&](auto I) { get<0>(I) = (get<0>(I) + get<1>(I)) & mask; });
     }
 }
 
