@@ -5,6 +5,11 @@
 #include <cstdint>
 #include <vector>
 
+void sample_noise_mod2k_seal_cbd(
+    const seal::EncryptionParameters &parms, uint64_t q_seal, uint64_t log_q, std::vector<uint64_t> &noise_out);
+
+void sample_noise_mod2k_direct_ternary(size_t coeff_count, uint64_t log_q, std::vector<uint64_t> &noise_out);
+
 std::vector<uint64_t> pad_same_to_poly_n(
     const std::vector<uint64_t> &input_flat, int h, int w, int c, int kernel_k, int poly_n);
 

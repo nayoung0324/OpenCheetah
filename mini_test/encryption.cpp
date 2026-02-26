@@ -1,6 +1,7 @@
 #include "encryption.h"
 
 #include <cstdint>
+#include <random>
 #include <stdexcept>
 #include <vector>
 
@@ -18,6 +19,38 @@ static inline uint64_t convert_qseal_to_mod2k_signed(uint64_t x_qseal, uint64_t 
                            ? static_cast<int64_t>(x_qseal)
                            : static_cast<int64_t>(x_qseal) - static_cast<int64_t>(q_seal);
     return static_cast<uint64_t>(centered) & mask;
+}
+
+void sample_noise_mod2k_seal_cbd(
+    const EncryptionParameters &parms, uint64_t q_seal, uint64_t log_q, std::vector<uint64_t> &noise_out)
+{
+    if (log_q == 0 || log_q > 62) throw std::invalid_argument("log_q must be in [1,62]");
+    const size_t n = parms.poly_modulus_degree();
+
+    noise_out.assign(n, 0);
+    MemoryPoolHandle pool = MemoryManager::GetPool(mm_prof_opt::mm_force_new, true);
+    auto noise = seal::util::allocate_poly(n, /*coeff_modulus_size=*/1, pool);
+    auto noise_prng = parms.random_generator()->create();
+    seal::util::sample_poly_cbd(noise_prng, parms, noise.get());
+    for (size_t i = 0; i < n; ++i) {
+        noise_out[i] = convert_qseal_to_mod2k_signed(noise[i], q_seal, log_q);
+    }
+}
+
+void sample_noise_mod2k_direct_ternary(size_t coeff_count, uint64_t log_q, std::vector<uint64_t> &noise_out)
+{
+    if (log_q == 0 || log_q > 62) throw std::invalid_argument("log_q must be in [1,62]");
+    const uint64_t mask = (1ULL << log_q) - 1ULL;
+
+    std::mt19937_64 rng(std::random_device{}());
+    std::uniform_int_distribution<int> ternary(-1, 1);
+
+    noise_out.assign(coeff_count, 0);
+    for (size_t i = 0; i < coeff_count; ++i) {
+        const int e = ternary(rng);
+        if (e < 0) noise_out[i] = mask;
+        else noise_out[i] = static_cast<uint64_t>(e);
+    }
 }
 
 static inline size_t idx_nhwc(int h, int w, int c, int W, int C) {
@@ -153,14 +186,12 @@ void encrypt_zero_nttfree(
     // Quantize c1 to mod 2^log_q
     reduce_poly_mod2k(c1, c1, N, log_q);
 
-    // 2) Sample error e <- chi (SEAL noise sampler), then quantize to mod 2^log_q
-    MemoryPoolHandle pool = MemoryManager::GetPool(mm_prof_opt::mm_force_new, true);
-    auto noise = seal::util::allocate_poly(N, /*coeff_modulus_size=*/1, pool);
-    auto noise_prng = parms.random_generator()->create();
-    seal::util::sample_poly_cbd(noise_prng, parms, noise.get());
-    for (size_t i = 0; i < N; ++i) {
-        noise[i] = convert_qseal_to_mod2k_signed(noise[i], q_seal, log_q);
-    }
+    // 2) Sample error e mod 2^k.
+    // Default: SEAL CBD sampler -> centered-lift from mod q_seal -> mod 2^k.
+    // Alternative (direct ternary in mod 2^k): sample_noise_mod2k_direct_ternary(N, log_q, noise).
+    std::vector<uint64_t> noise;
+    // sample_noise_mod2k_seal_cbd(parms, q_seal, log_q, noise);
+    sample_noise_mod2k_direct_ternary(N, log_q, noise);
 
     // 3) Compute t = a*s mod (x^N+1) without NTT, then quantize
     Plaintext t;
@@ -169,7 +200,7 @@ void encrypt_zero_nttfree(
 
     // 4) t = t + e mod 2^log_q
     for (size_t i = 0; i < N; ++i) {
-        t.data()[i] = (t.data()[i] + (noise.get()[i] & mask)) & mask;
+        t.data()[i] = (t.data()[i] + noise[i]) & mask;
     }
 
     // 5) c0 = -t mod 2^log_q
