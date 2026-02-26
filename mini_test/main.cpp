@@ -242,6 +242,25 @@ int main()
         }
     }
 
+    // Test: negacyclic coefficient rotation on ciphertext.
+    constexpr int64_t rot_shift = 7;
+    Ciphertext ct_rot = ct;
+    rotate_ct_coeff_inplace_mod2k(ct_rot, rot_shift, log_q);
+
+    std::vector<int64_t> decoded_rot =
+        decrypt_and_decode_nttfree(context, ct_rot, sk_pt, log_q, delta_shift, used_coeff_count);
+
+    std::vector<uint64_t> expected_rot_mod2k(N, 0);
+    rotate_poly_coeff_mod2k(expected_plain.data(), expected_rot_mod2k.data(), N, rot_shift, log_q);
+
+    size_t mismatch_rot = 0;
+    for (size_t i = 0; i < used_coeff_count; ++i) {
+        const int64_t expected_rot = centered_from_mod2k_main(expected_rot_mod2k[i], log_q);
+        if (decoded_rot[i] != expected_rot) {
+            ++mismatch_rot;
+        }
+    }
+
     size_t sample_begin = 33;
     size_t sample_end_excl = std::min<size_t>(43, used_coeff_count); // prints [33..42]
 
@@ -324,8 +343,17 @@ int main()
                   << ", decoded_ptmul=" << decoded_ptmul[i] << "\n";
     }
 
+    std::cout << "[Test: rotate(ct)]\n";
+    std::cout << "rot_shift=" << rot_shift << ", rot_mismatches=" << mismatch_rot << "\n";
+    std::cout << "sample(rot, idx " << sample_begin << "~" << (sample_end_excl - 1) << ")\n";
+    for (size_t i = sample_begin; i < sample_end_excl; ++i) {
+        const int64_t expected_rot = centered_from_mod2k_main(expected_rot_mod2k[i], log_q);
+        std::cout << "  [" << i << "] expected_rot=" << expected_rot
+                  << ", decoded_rot=" << decoded_rot[i] << "\n";
+    }
+
     return (mismatch_base == 0 && mismatch_mul == 0 && mismatch_add == 0 && mismatch_sub == 0 &&
-            mismatch_addpt == 0 && mismatch_subpt == 0 && mismatch_ptmul == 0)
+            mismatch_addpt == 0 && mismatch_subpt == 0 && mismatch_ptmul == 0 && mismatch_rot == 0)
                ? 0
                : 1;
 }

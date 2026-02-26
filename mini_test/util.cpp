@@ -77,6 +77,32 @@ void multiply_poly_secret_mod2k(
     }
 }
 
+void rotate_poly_coeff_mod2k(
+    const uint64_t *src, uint64_t *dst, size_t n, int64_t shift, uint64_t log_q)
+{
+    if (!src || !dst) throw std::invalid_argument("src/dst must not be null");
+    if (n == 0) throw std::invalid_argument("n must be > 0");
+    if (log_q == 0 || log_q > 62) throw std::invalid_argument("log_q must be in [1,62]");
+
+    const uint64_t mask = (1ULL << log_q) - 1ULL;
+    for (size_t i = 0; i < n; ++i) dst[i] = 0;
+
+    // Negacyclic shift: coefficient i moves to i+shift with wrap sign flip (x^N = -1).
+    for (size_t i = 0; i < n; ++i) {
+        int64_t t = static_cast<int64_t>(i) + shift;
+        int64_t q = t / static_cast<int64_t>(n);
+        int64_t r = t % static_cast<int64_t>(n);
+        if (r < 0) {
+            r += static_cast<int64_t>(n);
+            --q;
+        }
+
+        uint64_t v = src[i] & mask;
+        if (q & 1LL) v = (0ULL - v) & mask;
+        dst[static_cast<size_t>(r)] = v;
+    }
+}
+
 void add_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &pt, uint64_t log_q)
 {
     if (ct.size() < 1) throw std::invalid_argument("ciphertext must have at least one component");
@@ -177,6 +203,22 @@ void mul_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &
         uint64_t *ci = ct.data(comp);
         for (size_t i = 0; i < n; ++i) src[i] = ci[i];
         negacyclic_convolution_mod2k(src.data(), pt.data(), dst.data(), n, log_q);
+        for (size_t i = 0; i < n; ++i) ci[i] = dst[i];
+    }
+}
+
+void rotate_ct_coeff_inplace_mod2k(seal::Ciphertext &ct, int64_t shift, uint64_t log_q)
+{
+    if (ct.size() < 1) throw std::invalid_argument("ciphertext must have at least one component");
+    if (log_q == 0 || log_q > 62) throw std::invalid_argument("log_q must be in [1,62]");
+
+    const size_t n = ct.poly_modulus_degree();
+    std::vector<uint64_t> src(n, 0), dst(n, 0);
+
+    for (size_t comp = 0; comp < ct.size(); ++comp) {
+        uint64_t *ci = ct.data(comp);
+        for (size_t i = 0; i < n; ++i) src[i] = ci[i];
+        rotate_poly_coeff_mod2k(src.data(), dst.data(), n, shift, log_q);
         for (size_t i = 0; i < n; ++i) ci[i] = dst[i];
     }
 }
