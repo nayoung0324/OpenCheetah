@@ -10,6 +10,16 @@
 
 using namespace seal;
 
+static inline uint64_t convert_qseal_to_mod2k_signed(uint64_t x_qseal, uint64_t q_seal, uint64_t log_q)
+{
+    const uint64_t mask = (1ULL << log_q) - 1ULL;
+    // Interpret coefficient as centered integer in (-q_seal/2, q_seal/2], then remap to mod 2^k.
+    int64_t centered = (x_qseal <= (q_seal >> 1))
+                           ? static_cast<int64_t>(x_qseal)
+                           : static_cast<int64_t>(x_qseal) - static_cast<int64_t>(q_seal);
+    return static_cast<uint64_t>(centered) & mask;
+}
+
 static inline size_t idx_nhwc(int h, int w, int c, int W, int C) {
     return static_cast<size_t>((h * W + w) * C + c);
 }
@@ -148,7 +158,9 @@ void encrypt_zero_nttfree(
     auto noise = seal::util::allocate_poly(N, /*coeff_modulus_size=*/1, pool);
     auto noise_prng = parms.random_generator()->create();
     seal::util::sample_poly_cbd(noise_prng, parms, noise.get());
-    reduce_poly_mod2k(noise.get(), noise.get(), N, log_q);
+    for (size_t i = 0; i < N; ++i) {
+        noise[i] = convert_qseal_to_mod2k_signed(noise[i], q_seal, log_q);
+    }
 
     // 3) Compute t = a*s mod (x^N+1) without NTT, then quantize
     Plaintext t;
