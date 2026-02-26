@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <random>
 #include <stdexcept>
 #include <vector>
 
@@ -83,9 +84,20 @@ int main()
     // Build two toy input images (NHWC flattened), then pad into polynomial layout.
     std::vector<uint64_t> input_flat(static_cast<size_t>(H) * W * C, 0);
     std::vector<uint64_t> input_flat2(static_cast<size_t>(H) * W * C, 0);
+    // Option 1 (active): pseudo-random with fixed seed (reproducible).
+    std::mt19937_64 rng(20260226ULL);
+    std::uniform_int_distribution<uint64_t> dist1(0, 15);
+    std::uniform_int_distribution<uint64_t> dist2(0, 15);
+
+    // Option 2 (disabled): non-deterministic random each run.
+    // std::random_device rd;
+    // std::mt19937_64 rng(rd());
+    // std::uniform_int_distribution<uint64_t> dist1(0, 15);
+    // std::uniform_int_distribution<uint64_t> dist2(0, 15);
+
     for (size_t i = 0; i < input_flat.size(); ++i) {
-        input_flat[i] = static_cast<uint64_t>((i % 13) + 1);        // payload #1
-        input_flat2[i] = static_cast<uint64_t>(((i * 3) % 17) + 2); // payload #2
+        input_flat[i] = dist1(rng);
+        input_flat2[i] = dist2(rng);
     }
 
     std::vector<uint64_t> padded = pad_same_to_poly_n(input_flat, H, W, C, kernel_k, static_cast<int>(N));
@@ -176,6 +188,41 @@ int main()
         }
     }
 
+    // Test: ciphertext + plaintext (mod 2^k), then decrypt/decode again.
+    Ciphertext ct_addpt = ct;
+    add_plain_to_ct_inplace_mod2k(ct_addpt, m_pt2, log_q);
+
+    std::vector<int64_t> decoded_addpt =
+        decrypt_and_decode_nttfree(context, ct_addpt, sk_pt, log_q, delta_shift, used_coeff_count);
+
+    size_t mismatch_addpt = 0;
+    for (size_t i = 0; i < used_coeff_count; ++i) {
+        const uint64_t addpt_mod2k =
+            (static_cast<unsigned __int128>(expected_plain[i]) + expected_plain2[i]) & ((1ULL << log_q) - 1ULL);
+        const int64_t expected_addpt = centered_from_mod2k_main(addpt_mod2k, log_q);
+        if (decoded_addpt[i] != expected_addpt) {
+            ++mismatch_addpt;
+        }
+    }
+
+    // Test: ciphertext - plaintext (mod 2^k), then decrypt/decode again.
+    Ciphertext ct_subpt = ct;
+    sub_plain_to_ct_inplace_mod2k(ct_subpt, m_pt2, log_q);
+
+    std::vector<int64_t> decoded_subpt =
+        decrypt_and_decode_nttfree(context, ct_subpt, sk_pt, log_q, delta_shift, used_coeff_count);
+
+    size_t mismatch_subpt = 0;
+    for (size_t i = 0; i < used_coeff_count; ++i) {
+        const uint64_t subpt_mod2k =
+            (static_cast<unsigned __int128>(expected_plain[i]) + ((1ULL << log_q) - expected_plain2[i])) &
+            ((1ULL << log_q) - 1ULL);
+        const int64_t expected_subpt = centered_from_mod2k_main(subpt_mod2k, log_q);
+        if (decoded_subpt[i] != expected_subpt) {
+            ++mismatch_subpt;
+        }
+    }
+
     // Test: plaintext * ciphertext (mod 2^k), then decrypt/decode again.
     // Use unscaled pt2 so decode stays in the same plaintext domain.
     Plaintext pt_mul = vector_to_plaintext_coeff(expected_plain2, N, static_cast<int>(log_q));
@@ -195,8 +242,8 @@ int main()
         }
     }
 
-    const size_t sample_begin = 33;
-    const size_t sample_end_excl = std::min<size_t>(43, used_coeff_count); // prints [33..42]
+    size_t sample_begin = 33;
+    size_t sample_end_excl = std::min<size_t>(43, used_coeff_count); // prints [33..42]
 
     std::cout << "[Test: Base Encrypt->Decrypt]\n";
     std::cout << "N=" << N
@@ -242,6 +289,32 @@ int main()
                   << ", decoded_sub=" << decoded_sub[i] << "\n";
     }
 
+    std::cout << "[Test: ct + pt]\n";
+    std::cout << "add_pt_mismatches=" << mismatch_addpt << "\n";
+    std::cout << "sample(addpt, idx " << sample_begin << "~" << (sample_end_excl - 1) << ")\n";
+    for (size_t i = sample_begin; i < sample_end_excl; ++i) {
+        const uint64_t addpt_mod2k =
+            (static_cast<unsigned __int128>(expected_plain[i]) + expected_plain2[i]) & ((1ULL << log_q) - 1ULL);
+        const int64_t expected_addpt = centered_from_mod2k_main(addpt_mod2k, log_q);
+        std::cout << "  [" << i << "] expected_addpt=" << expected_addpt
+                  << ", decoded_addpt=" << decoded_addpt[i] << "\n";
+    }
+
+    std::cout << "[Test: ct - pt]\n";
+    std::cout << "sub_pt_mismatches=" << mismatch_subpt << "\n";
+    std::cout << "sample(subpt, idx " << sample_begin << "~" << (sample_end_excl - 1) << ")\n";
+    for (size_t i = sample_begin; i < sample_end_excl; ++i) {
+        const uint64_t subpt_mod2k =
+            (static_cast<unsigned __int128>(expected_plain[i]) + ((1ULL << log_q) - expected_plain2[i])) &
+            ((1ULL << log_q) - 1ULL);
+        const int64_t expected_subpt = centered_from_mod2k_main(subpt_mod2k, log_q);
+        std::cout << "  [" << i << "] expected_subpt=" << expected_subpt
+                  << ", decoded_subpt=" << decoded_subpt[i] << "\n";
+    }
+
+    sample_begin = sample_begin*2;
+    sample_end_excl = std::min<size_t>(sample_begin+10, used_coeff_count);
+
     std::cout << "[Test: pt * ct]\n";
     std::cout << "pt_mul_ct_mismatches=" << mismatch_ptmul << "\n";
     std::cout << "sample(pt*ct, idx " << sample_begin << "~" << (sample_end_excl - 1) << ")\n";
@@ -252,7 +325,7 @@ int main()
     }
 
     return (mismatch_base == 0 && mismatch_mul == 0 && mismatch_add == 0 && mismatch_sub == 0 &&
-            mismatch_ptmul == 0)
+            mismatch_addpt == 0 && mismatch_subpt == 0 && mismatch_ptmul == 0)
                ? 0
                : 1;
 }

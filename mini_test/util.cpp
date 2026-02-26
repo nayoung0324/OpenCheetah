@@ -91,6 +91,19 @@ void add_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &
     }
 }
 
+void sub_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &pt, uint64_t log_q)
+{
+    if (ct.size() < 1) throw std::invalid_argument("ciphertext must have at least one component");
+    if (pt.coeff_count() != ct.poly_modulus_degree()) {
+        throw std::invalid_argument("plaintext/ciphertext coeff count mismatch");
+    }
+    const uint64_t mask = (1ULL << log_q) - 1ULL;
+    uint64_t *c0 = ct.data(0);
+    for (size_t i = 0; i < pt.coeff_count(); ++i) {
+        c0[i] = ((c0[i] & mask) - (pt[i] & mask)) & mask;
+    }
+}
+
 void add_ct_inplace_mod2k(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_src, uint64_t log_q)
 {
     if (ct_dst.size() != ct_src.size()) throw std::invalid_argument("ciphertext size mismatch");
