@@ -206,33 +206,43 @@ void conv2d_rot_cmult_accum_mod2k(
     if (KH > H || KW > W) {
         throw std::invalid_argument("KH/KW must be <= H/W");
     }
+    if (input_ct.coeff_modulus_size() != 1) {
+        throw std::invalid_argument("conv2d_rot_cmult_accum_mod2k expects single coeff modulus");
+    }
 
     const uint64_t mask = (1ULL << log_q) - 1ULL;
-    bool out_initialized = false;
+    const size_t n = input_ct.poly_modulus_degree();
+
+    // Allocate destination with the same metadata and zero coefficients.
+    out_ct = input_ct;
+    for (size_t comp = 0; comp < out_ct.size(); ++comp) {
+        uint64_t *out = out_ct.data(comp);
+        for (size_t i = 0; i < n; ++i) out[i] = 0;
+    }
+
+    std::vector<uint64_t> rotated(n, 0);
 
     // y = sum_{kr,kc} w[kr,kc] * Rot(input, -(kr*W+kc))
+    // Fused path: rotate from input component into scratch, multiply by scalar, accumulate to out.
     for (size_t kr = 0; kr < KH; ++kr) {
         for (size_t kc = 0; kc < KW; ++kc) {
             const int64_t w = kernel_flat[idx2d(kr, kc, KW)];
             if (w == 0) continue;
-
-            seal::Ciphertext term = input_ct;
+            const uint64_t w_mod2k = static_cast<uint64_t>(w) & mask;
             const int64_t shift = -static_cast<int64_t>(kr * W + kc);
-            rotate_ct_coeff_inplace_mod2k(term, shift, log_q);
-            mul_const_ct_inplace_mod2k(term, static_cast<uint64_t>(w) & mask, log_q);
 
-            if (!out_initialized) {
-                out_ct = term;
-                out_initialized = true;
-            } else {
-                add_ct_inplace_mod2k(out_ct, term, log_q);
+            for (size_t comp = 0; comp < out_ct.size(); ++comp) {
+                const uint64_t *in = input_ct.data(comp);
+                uint64_t *out = out_ct.data(comp);
+
+                rotate_poly_coeff_mod2k(in, rotated.data(), n, shift, log_q);
+
+                for (size_t i = 0; i < n; ++i) {
+                    const auto prod = static_cast<unsigned __int128>(rotated[i]) * w_mod2k;
+                    out[i] = (out[i] + (static_cast<uint64_t>(prod) & mask)) & mask;
+                }
             }
         }
-    }
-
-    if (!out_initialized) {
-        out_ct = input_ct;
-        mul_const_ct_inplace_mod2k(out_ct, 0, log_q);
     }
 }
 
