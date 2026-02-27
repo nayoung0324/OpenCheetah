@@ -12,6 +12,9 @@ find_package(SEAL 3.7 REQUIRED)
 add_executable(mini_seal
   main.cpp
   conv.cpp
+  util.cpp
+  encryption.cpp
+  decryption.cpp
 )
 target_link_libraries(mini_seal PRIVATE SEAL::seal)
 
