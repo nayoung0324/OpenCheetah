@@ -496,6 +496,9 @@ void conv2d_pmult_accum_multi_in_packed(
 
         seal::Plaintext kernel_pt = build_conv_kernel_plain_packed(
             kernel_flat_cin, Cin, ch_begin, channels_per_ct, H, W, KH, KW, N, plain_modulus);
+        if (kernel_pt.is_zero()) {
+            continue;
+        }
 
         seal::Ciphertext term = input_cts_packed[g];
         evaluator.multiply_plain_inplace(term, kernel_pt);
@@ -505,6 +508,10 @@ void conv2d_pmult_accum_multi_in_packed(
         } else {
             evaluator.add_inplace(out_ct, term);
         }
+    }
+
+    if (!init) {
+        throw std::invalid_argument("all packed kernels are zero; PMult output would be transparent");
     }
 }
 

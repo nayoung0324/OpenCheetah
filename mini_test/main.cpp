@@ -79,9 +79,12 @@ int main()
         0, 0, 0,
         -1, -2, -1
     };
-    for (size_t i = 0; i < KH * KW; ++i) {
-        kernel_flat_cin[i] = k0[i];
-        kernel_flat_cin[KH * KW + i] = k1[i];
+    for (size_t ch = 0; ch < Cin; ++ch) {
+        const std::vector<int64_t> &k = (ch % 2 == 0) ? k0 : k1;
+        const size_t base = ch * KH * KW;
+        for (size_t i = 0; i < KH * KW; ++i) {
+            kernel_flat_cin[base + i] = k[i];
+        }
     }
 
     // Reference:
