@@ -20,6 +20,7 @@ int main()
     constexpr size_t KH = 3;
     constexpr size_t KW = 3;
     constexpr uint64_t log_q = 50;
+    constexpr int delta_shift = 20;
 
     EncryptionParameters parms(scheme_type::bfv);
     parms.set_poly_modulus_degree(N);
@@ -144,6 +145,7 @@ int main()
     for (size_t i = 0; i < H * W; ++i) {
         image_mod2k[i] = static_cast<uint64_t>(image[i]) & mask;
     }
+    scale_by_pow2_inplace(image_mod2k, delta_shift, static_cast<int>(log_q));
     Plaintext image_pt_mod2k = vector_to_plaintext_coeff(image_mod2k, N, static_cast<int>(log_q));
 
     Ciphertext image_ct_mod2k;
@@ -153,17 +155,12 @@ int main()
     Ciphertext conv_rot_ct_mod2k;
     conv2d_rot_cmult_accum_mod2k(image_ct_mod2k, kernel, H, W, KH, KW, log_q, conv_rot_ct_mod2k);
 
-    Plaintext conv_rot_pt_mod2k;
-    decrypt_nttfree(context, conv_rot_ct_mod2k, sk_pt, conv_rot_pt_mod2k, log_q);
+    Plaintext conv_rot_scaled_pt_mod2k;
+    decrypt_nttfree(context, conv_rot_ct_mod2k, sk_pt, conv_rot_scaled_pt_mod2k, log_q);
+    std::vector<int64_t> conv_rot_decoded =
+        decode_divide_pow2(conv_rot_scaled_pt_mod2k, delta_shift, static_cast<int>(log_q), N);
 
-    const uint64_t q_mod2k = (1ULL << log_q);
-    const uint64_t half_mod2k = (q_mod2k >> 1);
-    const auto centered_mod2k = [&](size_t idx) -> int64_t {
-        const uint64_t u = (idx < conv_rot_pt_mod2k.coeff_count()) ? conv_rot_pt_mod2k[idx] : 0ULL;
-        const uint64_t v = u & (q_mod2k - 1ULL);
-        if (v < half_mod2k) return static_cast<int64_t>(v);
-        return static_cast<int64_t>(v) - static_cast<int64_t>(q_mod2k);
-    };
+    const auto centered_mod2k = [&](size_t idx) -> int64_t { return conv_rot_decoded[idx]; };
 
     const std::vector<size_t> valid_rot_indices = valid_output_indices_rot_cmult_mod2k(H, W, KH, KW, N);
     size_t valid_rot_mismatches = 0;
@@ -180,7 +177,7 @@ int main()
     }
 
     std::cout << "[_mod2k conv via rotate+CMult+accumulate]\n";
-    std::cout << "N=" << N << ", log_q=" << log_q
+    std::cout << "N=" << N << ", log_q=" << log_q << ", delta_shift=" << delta_shift
               << ", valid_count=" << valid_rot_indices.size()
               << ", valid_mismatches=" << valid_rot_mismatches
               << ", nonvalid_nonzero=" << nonvalid_rot_nonzero << "\n";
