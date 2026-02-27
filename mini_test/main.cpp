@@ -62,7 +62,7 @@ int main()
     parms_mod2k.set_poly_modulus_degree(N);
     parms_mod2k.set_coeff_modulus(CoeffModulus::Create(N, { static_cast<int>(log_q_mod2k) }));
     parms_mod2k.set_plain_modulus(PlainModulus::Batching(N, 19));
-    SEALContext context_mod2k(parms_mod2k);
+    SEALContext context_mod2k(parms_mod2k, true, sec_level_type::none);
     if (!context_mod2k.parameters_set()) {
         std::cerr << "SEAL mod2k-context parameter error: " << context_mod2k.parameter_error_name()
                   << " - " << context_mod2k.parameter_error_message() << "\n";
