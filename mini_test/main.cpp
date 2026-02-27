@@ -29,7 +29,7 @@ int main()
     constexpr size_t KW = 3;
     constexpr size_t PH = (KH - 1) / 2;
     constexpr size_t PW = (KW - 1) / 2;
-    constexpr uint64_t log_q = 50;
+    constexpr uint64_t log_q = 60;
     constexpr int delta_shift = 20;
 
     const std::vector<BenchCase> cases = {
@@ -48,8 +48,8 @@ int main()
 
     EncryptionParameters parms(scheme_type::bfv);
     parms.set_poly_modulus_degree(N);
-    parms.set_coeff_modulus(CoeffModulus::Create(N, { 50 }));
-    parms.set_plain_modulus(PlainModulus::Batching(N, 20));
+    parms.set_coeff_modulus(CoeffModulus::Create(N, { 60 }));
+    parms.set_plain_modulus(PlainModulus::Batching(N, 19));
 
     SEALContext context(parms);
     if (!context.parameters_set()) {
