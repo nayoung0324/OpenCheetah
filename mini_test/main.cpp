@@ -289,7 +289,6 @@ int main()
                     evaluator,
                     outs);
                 for (size_t co = 0; co < Co; ++co) {
-                    extract_valid_coeffs_inplace(outs[co], evaluator, tp.valid_indices_pmult);
                     global_checksum ^= outs[co].data(0)[tp.out_base_packed];
                 }
             }
