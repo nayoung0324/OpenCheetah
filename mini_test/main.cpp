@@ -22,9 +22,10 @@ int main()
     constexpr size_t KH = 3;
     constexpr size_t KW = 3;
     constexpr size_t Cin = 3;
+    constexpr size_t Co = 4;
     constexpr uint64_t log_q = 50;
     constexpr int delta_shift = 20;
-    constexpr int iters = 200;
+    constexpr int iters = 100;
 
     EncryptionParameters parms(scheme_type::bfv);
     parms.set_poly_modulus_degree(N);
@@ -47,6 +48,7 @@ int main()
         return 3;
     }
     const size_t n_packed_ct = (Cin + channels_per_ct - 1) / channels_per_ct;
+    const size_t out_base_packed = one_ch * (channels_per_ct - 1) + W * (KH - 1) + (KW - 1);
 
     KeyGenerator keygen(context);
     SecretKey sk = keygen.secret_key();
@@ -62,82 +64,80 @@ int main()
 
     std::vector<std::vector<int64_t>> images(Cin, std::vector<int64_t>(H * W, 0));
     for (size_t ch = 0; ch < Cin; ++ch) {
-        for (size_t i = 0; i < H * W; ++i) {
-            images[ch][i] = dist(rng);
+        for (size_t i = 0; i < H * W; ++i) images[ch][i] = dist(rng);
+    }
+
+    const std::vector<int64_t> k0 = { 1, 0, -1, 2, 0, -2, 1, 0, -1 };
+    const std::vector<int64_t> k1 = { 1, 2, 1, 0, 0, 0, -1, -2, -1 };
+    std::vector<int64_t> kernels_flat_co_cin(Co * Cin * KH * KW, 0);
+    for (size_t co = 0; co < Co; ++co) {
+        for (size_t ci = 0; ci < Cin; ++ci) {
+            const std::vector<int64_t> &base = ((co + ci) % 2 == 0) ? k0 : k1;
+            const size_t off = (co * Cin + ci) * KH * KW;
+            for (size_t i = 0; i < KH * KW; ++i) kernels_flat_co_cin[off + i] = base[i];
         }
     }
 
-    // kernel layout: [ch][kh][kw] flattened as Cin*KH*KW.
-    std::vector<int64_t> kernel_flat_cin(Cin * KH * KW, 0);
-    const std::vector<int64_t> k0 = {
-        1, 0, -1,
-        2, 0, -2,
-        1, 0, -1
-    };
-    const std::vector<int64_t> k1 = {
-        1, 2, 1,
-        0, 0, 0,
-        -1, -2, -1
-    };
-    for (size_t ch = 0; ch < Cin; ++ch) {
-        const std::vector<int64_t> &k = (ch % 2 == 0) ? k0 : k1;
-        const size_t base = ch * KH * KW;
-        for (size_t i = 0; i < KH * KW; ++i) {
-            kernel_flat_cin[base + i] = k[i];
-        }
-    }
-
-    // Reference:
-    // - Cheetah PMult packed layout at out_base_packed + r*W + c.
-    // - mod2k rotate+cmult layout at r*W + c.
-    const size_t out_base_packed = one_ch * (channels_per_ct - 1) + W * (KH - 1) + (KW - 1);
-    std::vector<int64_t> ref_poly(N, 0);
-    std::vector<int64_t> ref_rot(N, 0);
-    for (size_t r = 0; r + KH <= H; ++r) {
-        for (size_t c = 0; c + KW <= W; ++c) {
-            int64_t acc = 0;
-            for (size_t ch = 0; ch < Cin; ++ch) {
-                const size_t kbase = ch * KH * KW;
-                for (size_t kr = 0; kr < KH; ++kr) {
-                    for (size_t kc = 0; kc < KW; ++kc) {
-                        acc += images[ch][(r + kr) * W + (c + kc)] * kernel_flat_cin[kbase + kr * KW + kc];
+    // References per output channel.
+    std::vector<std::vector<int64_t>> ref_poly(Co, std::vector<int64_t>(N, 0));
+    std::vector<std::vector<int64_t>> ref_rot(Co, std::vector<int64_t>(N, 0));
+    for (size_t co = 0; co < Co; ++co) {
+        for (size_t r = 0; r + KH <= H; ++r) {
+            for (size_t c = 0; c + KW <= W; ++c) {
+                int64_t acc = 0;
+                for (size_t ci = 0; ci < Cin; ++ci) {
+                    const size_t kbase = (co * Cin + ci) * KH * KW;
+                    for (size_t kr = 0; kr < KH; ++kr) {
+                        for (size_t kc = 0; kc < KW; ++kc) {
+                            acc += images[ci][(r + kr) * W + (c + kc)] * kernels_flat_co_cin[kbase + kr * KW + kc];
+                        }
                     }
                 }
+                ref_poly[co][out_base_packed + r * W + c] = acc;
+                ref_rot[co][r * W + c] = acc;
             }
-            ref_poly[out_base_packed + r * W + c] = acc;
-            ref_rot[r * W + c] = acc;
         }
     }
 
+    // Inputs:
+    // - PMult/Cheetah path: packed input channels.
     std::vector<Ciphertext> image_cts_seal_packed(n_packed_ct);
-    std::vector<Ciphertext> image_cts_mod2k(Cin);
     for (size_t g = 0; g < n_packed_ct; ++g) {
         const size_t ch_begin = g * channels_per_ct;
-        Plaintext image_pt_packed = encode_image_coeff_plain_packed(
-            images, ch_begin, channels_per_ct, H, W, N, plain_mod);
+        Plaintext image_pt_packed =
+            encode_image_coeff_plain_packed(images, ch_begin, channels_per_ct, H, W, N, plain_mod);
         encryptor.encrypt(image_pt_packed, image_cts_seal_packed[g]);
-
     }
 
-    // _mod2k path: keep one input channel per ciphertext (no packed input).
-    for (size_t ch = 0; ch < Cin; ++ch) {
+    // - _mod2k path: one channel per ciphertext.
+    std::vector<Ciphertext> image_cts_mod2k(Cin);
+    for (size_t ci = 0; ci < Cin; ++ci) {
         std::vector<uint64_t> image_mod2k(N, 0);
-        for (size_t i = 0; i < one_ch; ++i) {
-            image_mod2k[i] = static_cast<uint64_t>(images[ch][i]) & mask;
-        }
+        for (size_t i = 0; i < one_ch; ++i) image_mod2k[i] = static_cast<uint64_t>(images[ci][i]) & mask;
         scale_by_pow2_inplace(image_mod2k, delta_shift, static_cast<int>(log_q));
         Plaintext image_pt_mod2k = vector_to_plaintext_coeff(image_mod2k, N, static_cast<int>(log_q));
-        encrypt_zero_nttfree(context, image_cts_mod2k[ch], sk_pt, log_q);
-        add_plain_to_ct_inplace_mod2k(image_cts_mod2k[ch], image_pt_mod2k, log_q);
+        encrypt_zero_nttfree(context, image_cts_mod2k[ci], sk_pt, log_q);
+        add_plain_to_ct_inplace_mod2k(image_cts_mod2k[ci], image_pt_mod2k, log_q);
+    }
+
+    std::vector<size_t> valid_indices_pmult;
+    std::vector<size_t> valid_indices_rot;
+    valid_indices_pmult.reserve((H - KH + 1) * (W - KW + 1));
+    for (size_t r = 0; r + KH <= H; ++r) {
+        for (size_t c = 0; c + KW <= W; ++c) {
+            valid_indices_pmult.push_back(out_base_packed + r * W + c);
+            valid_indices_rot.push_back(r * W + c);
+        }
     }
 
     // ---------------------------
-    // Cheetah-style PMult (multi-in-channel accumulate)
+    // PMult: packed input, multi output channels
     // ---------------------------
-    Ciphertext conv_pmult_ct;
-    conv2d_pmult_accum_multi_in_packed(
+    std::vector<Ciphertext> out_pmult_cts;
+    conv2d_pmult_multi_out_packed(
         image_cts_seal_packed,
-        kernel_flat_cin,
+        kernels_flat_co_cin,
+        Co,
         Cin,
         channels_per_ct,
         H,
@@ -146,71 +146,49 @@ int main()
         KW,
         plain_mod,
         evaluator,
-        conv_pmult_ct);
-    std::vector<size_t> valid_indices;
-    valid_indices.reserve((H - KH + 1) * (W - KW + 1));
-    for (size_t r = 0; r + KH <= H; ++r) {
-        for (size_t c = 0; c + KW <= W; ++c) {
-            valid_indices.push_back(out_base_packed + r * W + c);
+        out_pmult_cts);
+
+    size_t pmult_total_mismatches = 0;
+    for (size_t co = 0; co < Co; ++co) {
+        extract_valid_coeffs_inplace(out_pmult_cts[co], evaluator, valid_indices_pmult);
+        Plaintext pt;
+        decryptor.decrypt(out_pmult_cts[co], pt);
+        for (size_t idx : valid_indices_pmult) {
+            const uint64_t coeff = (idx < pt.coeff_count()) ? pt[idx] : 0ULL;
+            const int64_t got = decode_plain_coeff_to_signed(coeff, plain_mod);
+            if (got != ref_poly[co][idx]) ++pmult_total_mismatches;
         }
     }
-    extract_valid_coeffs_inplace(conv_pmult_ct, evaluator, valid_indices);
 
-    Plaintext conv_pmult_pt;
-    decryptor.decrypt(conv_pmult_ct, conv_pmult_pt);
-    auto coeff_at = [&](size_t idx) -> uint64_t { return (idx < conv_pmult_pt.coeff_count()) ? conv_pmult_pt[idx] : 0ULL; };
-
-    size_t pmult_mismatches = 0;
-    for (size_t idx : valid_indices) {
-        const int64_t got = decode_plain_coeff_to_signed(coeff_at(idx), plain_mod);
-        if (got != ref_poly[idx]) ++pmult_mismatches;
-    }
-
-    std::cout << "[SEAL PMult conv: packed multi input channels]\n";
-    std::cout << "Cin=" << Cin << ", channels_per_ct=" << channels_per_ct << ", packed_ct=" << n_packed_ct
-              << ", N=" << N << ", HxW=" << H << "x" << W << ", K=" << KH << "x" << KW
-              << ", valid_count=" << valid_indices.size() << ", valid_mismatches=" << pmult_mismatches << "\n";
-    std::cout << "sample(valid outputs, first 12)\n";
-    size_t printed = 0;
-    for (size_t r = 0; r + KH <= H && printed < 12; ++r) {
-        for (size_t c = 0; c + KW <= W && printed < 12; ++c) {
-            const size_t idx = out_base_packed + r * W + c;
-            const int64_t got = decode_plain_coeff_to_signed(coeff_at(idx), plain_mod);
-            std::cout << "  [" << idx << "] expected=" << ref_poly[idx] << ", got=" << got << "\n";
-            ++printed;
-        }
-    }
+    std::cout << "[SEAL PMult conv: packed input, multi output]\n";
+    std::cout << "Cin=" << Cin << ", Co=" << Co
+              << ", channels_per_ct=" << channels_per_ct
+              << ", packed_ct=" << n_packed_ct
+              << ", valid_per_output=" << valid_indices_pmult.size()
+              << ", total_mismatches=" << pmult_total_mismatches << "\n";
 
     // ---------------------------
-    // mod2k rotate+CMult (multi-in-channel accumulate)
+    // _mod2k: per-channel input, multi output channels
     // ---------------------------
-    Ciphertext conv_rot_ct_mod2k;
-    conv2d_rot_cmult_accum_multi_in_mod2k(
-        image_cts_mod2k, kernel_flat_cin, Cin, H, W, KH, KW, log_q, conv_rot_ct_mod2k);
+    std::vector<Ciphertext> out_mod2k_cts;
+    conv2d_rot_cmult_multi_out_mod2k(
+        image_cts_mod2k, kernels_flat_co_cin, Co, Cin, H, W, KH, KW, log_q, out_mod2k_cts);
 
-    Plaintext conv_rot_scaled_pt_mod2k;
-    decrypt_nttfree(context, conv_rot_ct_mod2k, sk_pt, conv_rot_scaled_pt_mod2k, log_q);
-    std::vector<int64_t> conv_rot_decoded =
-        decode_divide_pow2(conv_rot_scaled_pt_mod2k, delta_shift, static_cast<int>(log_q), N);
-
-    const auto valid_rot_indices = valid_output_indices_rot_cmult_mod2k(H, W, KH, KW, N);
-    size_t rot_mismatches = 0;
-    for (size_t idx : valid_rot_indices) {
-        if (conv_rot_decoded[idx] != ref_rot[idx]) ++rot_mismatches;
-    }
-
-    std::cout << "[_mod2k rotate+CMult conv: per-channel input ct]\n";
-    std::cout << "Cin=" << Cin << ", input_ct=" << Cin << ", N=" << N << ", log_q=" << log_q
-              << ", valid_count=" << valid_rot_indices.size() << ", valid_mismatches=" << rot_mismatches << "\n";
-    std::cout << "sample(valid outputs, first 12)\n";
-    printed = 0;
-    for (size_t r = 0; r + KH <= H && printed < 12; ++r) {
-        for (size_t c = 0; c + KW <= W && printed < 12; ++c) {
-            const size_t idx = r * W + c;
-            std::cout << "  [" << idx << "] expected=" << ref_rot[idx] << ", got=" << conv_rot_decoded[idx] << "\n";
-            ++printed;
+    size_t mod2k_total_mismatches = 0;
+    for (size_t co = 0; co < Co; ++co) {
+        Plaintext scaled_pt;
+        decrypt_nttfree(context, out_mod2k_cts[co], sk_pt, scaled_pt, log_q);
+        std::vector<int64_t> decoded = decode_divide_pow2(scaled_pt, delta_shift, static_cast<int>(log_q), N);
+        for (size_t idx : valid_indices_rot) {
+            if (decoded[idx] != ref_rot[co][idx]) ++mod2k_total_mismatches;
         }
     }
+
+    std::cout << "[_mod2k rotate+CMult conv: per-channel input, multi output]\n";
+    std::cout << "Cin=" << Cin << ", Co=" << Co
+              << ", input_ct=" << Cin
+              << ", valid_per_output=" << valid_indices_rot.size()
+              << ", total_mismatches=" << mod2k_total_mismatches << "\n";
 
     // ---------------------------
     // Speed benchmark (conv core only)
@@ -219,10 +197,11 @@ int main()
 
     const auto t0_pmult = Clock::now();
     for (int i = 0; i < iters; ++i) {
-        Ciphertext ct_work;
-        conv2d_pmult_accum_multi_in_packed(
+        std::vector<Ciphertext> cts;
+        conv2d_pmult_multi_out_packed(
             image_cts_seal_packed,
-            kernel_flat_cin,
+            kernels_flat_co_cin,
+            Co,
             Cin,
             channels_per_ct,
             H,
@@ -231,29 +210,33 @@ int main()
             KW,
             plain_mod,
             evaluator,
-            ct_work);
-        extract_valid_coeffs_inplace(ct_work, evaluator, valid_indices);
-        bench_checksum ^= ct_work.data(0)[out_base_packed];
+            cts);
+        for (size_t co = 0; co < Co; ++co) {
+            extract_valid_coeffs_inplace(cts[co], evaluator, valid_indices_pmult);
+            bench_checksum ^= cts[co].data(0)[out_base_packed];
+        }
     }
     const auto t1_pmult = Clock::now();
     const double pmult_us =
         static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(t1_pmult - t0_pmult).count());
 
-    const auto t0_rot = Clock::now();
+    const auto t0_mod2k = Clock::now();
     for (int i = 0; i < iters; ++i) {
-        Ciphertext ct_work;
-        conv2d_rot_cmult_accum_multi_in_mod2k(
-            image_cts_mod2k, kernel_flat_cin, Cin, H, W, KH, KW, log_q, ct_work);
-        bench_checksum ^= ct_work.data(0)[0];
+        std::vector<Ciphertext> cts;
+        conv2d_rot_cmult_multi_out_mod2k(
+            image_cts_mod2k, kernels_flat_co_cin, Co, Cin, H, W, KH, KW, log_q, cts);
+        for (size_t co = 0; co < Co; ++co) {
+            bench_checksum ^= cts[co].data(0)[0];
+        }
     }
-    const auto t1_rot = Clock::now();
-    const double rot_us =
-        static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(t1_rot - t0_rot).count());
+    const auto t1_mod2k = Clock::now();
+    const double mod2k_us =
+        static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(t1_mod2k - t0_mod2k).count());
 
-    std::cout << "[Speed comparison: conv core only, packed multi input channels]\n";
+    std::cout << "[Speed comparison: conv core only, multi output]\n";
     std::cout << "iters=" << iters << "\n";
-    std::cout << "  pmult+extract total_us=" << pmult_us << ", avg_us=" << (pmult_us / iters) << "\n";
-    std::cout << "  rot+cmult+accum_mod2k total_us=" << rot_us << ", avg_us=" << (rot_us / iters) << "\n";
+    std::cout << "  pmult(packed-in)+extract total_us=" << pmult_us << ", avg_us=" << (pmult_us / iters) << "\n";
+    std::cout << "  mod2k(per-ch-in) total_us=" << mod2k_us << ", avg_us=" << (mod2k_us / iters) << "\n";
     std::cout << "  bench_checksum=" << bench_checksum << "\n";
 
     return 0;

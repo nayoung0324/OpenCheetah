@@ -157,3 +157,31 @@ void conv2d_rot_cmult_accum_multi_in_packed_mod2k(
     size_t KW,
     uint64_t log_q,
     seal::Ciphertext &out_ct);
+
+// Multi-output-channel wrappers.
+// kernels_flat_co_cin layout: [co][ci][kh][kw], flattened with size Co*Cin*KH*KW.
+void conv2d_pmult_multi_out_packed(
+    const std::vector<seal::Ciphertext> &input_cts_packed,
+    const std::vector<int64_t> &kernels_flat_co_cin,
+    size_t Co,
+    size_t Cin,
+    size_t channels_per_ct,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    uint64_t plain_modulus,
+    const seal::Evaluator &evaluator,
+    std::vector<seal::Ciphertext> &out_cts);
+
+void conv2d_rot_cmult_multi_out_mod2k(
+    const std::vector<seal::Ciphertext> &input_cts,
+    const std::vector<int64_t> &kernels_flat_co_cin,
+    size_t Co,
+    size_t Cin,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    uint64_t log_q,
+    std::vector<seal::Ciphertext> &out_cts);

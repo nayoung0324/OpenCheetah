@@ -566,3 +566,71 @@ void conv2d_rot_cmult_accum_multi_in_packed_mod2k(
         }
     }
 }
+
+void conv2d_pmult_multi_out_packed(
+    const std::vector<seal::Ciphertext> &input_cts_packed,
+    const std::vector<int64_t> &kernels_flat_co_cin,
+    size_t Co,
+    size_t Cin,
+    size_t channels_per_ct,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    uint64_t plain_modulus,
+    const seal::Evaluator &evaluator,
+    std::vector<seal::Ciphertext> &out_cts)
+{
+    if (Co == 0 || Cin == 0) throw std::invalid_argument("Co/Cin must be non-zero");
+    if (kernels_flat_co_cin.size() != Co * Cin * KH * KW) {
+        throw std::invalid_argument("kernels_flat_co_cin size must be Co*Cin*KH*KW");
+    }
+
+    out_cts.resize(Co);
+    const size_t one_filter = Cin * KH * KW;
+    for (size_t co = 0; co < Co; ++co) {
+        std::vector<int64_t> kernel_flat_cin(one_filter, 0);
+        const size_t base = co * one_filter;
+        for (size_t i = 0; i < one_filter; ++i) kernel_flat_cin[i] = kernels_flat_co_cin[base + i];
+        conv2d_pmult_accum_multi_in_packed(
+            input_cts_packed,
+            kernel_flat_cin,
+            Cin,
+            channels_per_ct,
+            H,
+            W,
+            KH,
+            KW,
+            plain_modulus,
+            evaluator,
+            out_cts[co]);
+    }
+}
+
+void conv2d_rot_cmult_multi_out_mod2k(
+    const std::vector<seal::Ciphertext> &input_cts,
+    const std::vector<int64_t> &kernels_flat_co_cin,
+    size_t Co,
+    size_t Cin,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    uint64_t log_q,
+    std::vector<seal::Ciphertext> &out_cts)
+{
+    if (Co == 0 || Cin == 0) throw std::invalid_argument("Co/Cin must be non-zero");
+    if (kernels_flat_co_cin.size() != Co * Cin * KH * KW) {
+        throw std::invalid_argument("kernels_flat_co_cin size must be Co*Cin*KH*KW");
+    }
+
+    out_cts.resize(Co);
+    const size_t one_filter = Cin * KH * KW;
+    for (size_t co = 0; co < Co; ++co) {
+        std::vector<int64_t> kernel_flat_cin(one_filter, 0);
+        const size_t base = co * one_filter;
+        for (size_t i = 0; i < one_filter; ++i) kernel_flat_cin[i] = kernels_flat_co_cin[base + i];
+        conv2d_rot_cmult_accum_multi_in_mod2k(
+            input_cts, kernel_flat_cin, Cin, H, W, KH, KW, log_q, out_cts[co]);
+    }
+}
