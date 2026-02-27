@@ -75,3 +75,31 @@ void rotate_multiply_scalar_add_ct_mod2k(
     int64_t scalar,
     uint64_t log_q,
     seal::Ciphertext &acc_ct);
+
+// Multi-input-channel conv (channel-accumulate) with Cheetah-style PMult.
+// input_cts.size() must be Cin, kernel_flat_cin size must be Cin*KH*KW.
+// Each channel is convolved independently and accumulated into out_ct.
+void conv2d_pmult_accum_multi_in(
+    const std::vector<seal::Ciphertext> &input_cts,
+    const std::vector<int64_t> &kernel_flat_cin,
+    size_t Cin,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    uint64_t plain_modulus,
+    const seal::Evaluator &evaluator,
+    seal::Ciphertext &out_ct);
+
+// Multi-input-channel conv (channel-accumulate) with _mod2k rotate+CMult.
+// input_cts.size() must be Cin, kernel_flat_cin size must be Cin*KH*KW.
+void conv2d_rot_cmult_accum_multi_in_mod2k(
+    const std::vector<seal::Ciphertext> &input_cts,
+    const std::vector<int64_t> &kernel_flat_cin,
+    size_t Cin,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    uint64_t log_q,
+    seal::Ciphertext &out_ct);

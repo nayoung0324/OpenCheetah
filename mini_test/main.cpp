@@ -21,6 +21,7 @@ int main()
     constexpr size_t W = 32;
     constexpr size_t KH = 3;
     constexpr size_t KW = 3;
+    constexpr size_t Cin = 2;
     constexpr uint64_t log_q = 50;
     constexpr int delta_shift = 20;
     constexpr int iters = 200;
@@ -38,6 +39,7 @@ int main()
     }
 
     const uint64_t plain_mod = parms.plain_modulus().value();
+    const uint64_t mask = (1ULL << log_q) - 1ULL;
 
     KeyGenerator keygen(context);
     SecretKey sk = keygen.secret_key();
@@ -48,112 +50,134 @@ int main()
     Evaluator evaluator(context);
     Decryptor decryptor(context, sk);
 
-    // Reproducible small integer input/kernel to avoid wrap in plain modulus.
-    std::mt19937_64 rng(20260226ULL);
-    std::uniform_int_distribution<int> img_dist(0, 7);
+    std::mt19937_64 rng(20260227ULL);
+    std::uniform_int_distribution<int> dist(-2, 2);
 
-    std::vector<int64_t> image(H * W, 0);
-    for (size_t i = 0; i < image.size(); ++i) {
-        image[i] = img_dist(rng);
+    std::vector<std::vector<int64_t>> images(Cin, std::vector<int64_t>(H * W, 0));
+    for (size_t ch = 0; ch < Cin; ++ch) {
+        for (size_t i = 0; i < H * W; ++i) {
+            images[ch][i] = dist(rng);
+        }
     }
 
-    // Example 3x3 kernel (coefficient encoding / PMult style).
-    std::vector<int64_t> kernel = {
+    // kernel layout: [ch][kh][kw] flattened as Cin*KH*KW.
+    std::vector<int64_t> kernel_flat_cin(Cin * KH * KW, 0);
+    const std::vector<int64_t> k0 = {
         1, 0, -1,
         2, 0, -2,
         1, 0, -1
     };
+    const std::vector<int64_t> k1 = {
+        1, 2, 1,
+        0, 0, 0,
+        -1, -2, -1
+    };
+    for (size_t i = 0; i < KH * KW; ++i) {
+        kernel_flat_cin[i] = k0[i];
+        kernel_flat_cin[KH * KW + i] = k1[i];
+    }
 
-    // Direct valid conv reference for rot+cmult layout (stored at idx=r*W+c).
+    // Reference:
+    // - Cheetah PMult layout at out_base + r*W + c.
+    // - mod2k rotate+cmult layout at r*W + c.
+    const size_t out_base = cheetah_filter_base_index(KH, KW, W);
+    std::vector<int64_t> ref_poly(N, 0);
     std::vector<int64_t> ref_rot(N, 0);
     for (size_t r = 0; r + KH <= H; ++r) {
         for (size_t c = 0; c + KW <= W; ++c) {
             int64_t acc = 0;
-            for (size_t kr = 0; kr < KH; ++kr) {
-                for (size_t kc = 0; kc < KW; ++kc) {
-                    acc += image[(r + kr) * W + (c + kc)] * kernel[kr * KW + kc];
+            for (size_t ch = 0; ch < Cin; ++ch) {
+                const size_t kbase = ch * KH * KW;
+                for (size_t kr = 0; kr < KH; ++kr) {
+                    for (size_t kc = 0; kc < KW; ++kc) {
+                        acc += images[ch][(r + kr) * W + (c + kc)] * kernel_flat_cin[kbase + kr * KW + kc];
+                    }
                 }
             }
+            ref_poly[out_base + r * W + c] = acc;
             ref_rot[r * W + c] = acc;
         }
     }
 
-    Plaintext image_pt = encode_image_coeff_plain(image, H, W, N, plain_mod);
-    Plaintext kernel_pt = build_conv_kernel_plain(kernel, KH, KW, W, N, plain_mod);
+    std::vector<Ciphertext> image_cts_seal(Cin);
+    std::vector<Ciphertext> image_cts_mod2k(Cin);
+    for (size_t ch = 0; ch < Cin; ++ch) {
+        Plaintext image_pt = encode_image_coeff_plain(images[ch], H, W, N, plain_mod);
+        encryptor.encrypt(image_pt, image_cts_seal[ch]);
 
-    Ciphertext image_ct;
-    encryptor.encrypt(image_pt, image_ct);
-
-    // PMult-based conv: one multiply_plain computes polynomial-domain convolution.
-    Ciphertext conv_ct = image_ct;
-    evaluator.multiply_plain_inplace(conv_ct, kernel_pt);
-    const std::vector<size_t> valid_indices = cheetah_valid_output_indices(H, W, KH, KW, N);
-    extract_valid_coeffs_inplace(conv_ct, evaluator, valid_indices);
-
-    Plaintext conv_pt;
-    decryptor.decrypt(conv_ct, conv_pt);
-    const auto coeff_at = [&](size_t idx) -> uint64_t {
-        return (idx < conv_pt.coeff_count()) ? conv_pt[idx] : 0ULL;
-    };
-
-    const size_t out_base = cheetah_filter_base_index(KH, KW, W);
-    std::vector<int64_t> ref_poly = conv2d_reference_poly_cheetah_valid(image, H, W, kernel, KH, KW, N);
-
-    size_t valid_count = 0;
-    size_t valid_mismatches = 0;
-    for (size_t i : valid_indices) {
-        ++valid_count;
-        const int64_t got = decode_plain_coeff_to_signed(coeff_at(i), plain_mod);
-        if (got != ref_poly[i]) ++valid_mismatches;
-    }
-
-    // Optional sanity signal for non-extracted coefficients (not used for correctness).
-    size_t nonvalid_nonzero = 0;
-    for (size_t i = 0; i < N; ++i) {
-        bool is_valid = false;
-        if (i >= out_base) {
-            const size_t rel = i - out_base;
-            const size_t rr = rel / W;
-            const size_t cc = rel % W;
-            is_valid = (rr + KH <= H) && (cc + KW <= W);
+        std::vector<uint64_t> image_mod2k(N, 0);
+        for (size_t i = 0; i < H * W; ++i) {
+            image_mod2k[i] = static_cast<uint64_t>(images[ch][i]) & mask;
         }
-        if (is_valid) continue;
-        const int64_t got = decode_plain_coeff_to_signed(coeff_at(i), plain_mod);
-        if (got != 0) ++nonvalid_nonzero;
+        scale_by_pow2_inplace(image_mod2k, delta_shift, static_cast<int>(log_q));
+        Plaintext image_pt_mod2k = vector_to_plaintext_coeff(image_mod2k, N, static_cast<int>(log_q));
+        encrypt_zero_nttfree(context, image_cts_mod2k[ch], sk_pt, log_q);
+        add_plain_to_ct_inplace_mod2k(image_cts_mod2k[ch], image_pt_mod2k, log_q);
     }
 
-    std::cout << "[SEAL coefficient-encoding conv via PMult]\n";
-    std::cout << "N=" << N << ", HxW=" << H << "x" << W << ", K=" << KH << "x" << KW
-              << ", out_base=" << out_base << ", valid_count=" << valid_count
-              << ", valid_mismatches=" << valid_mismatches
-              << ", nonvalid_nonzero=" << nonvalid_nonzero << "\n";
+    // ---------------------------
+    // Cheetah-style PMult (multi-in-channel accumulate)
+    // ---------------------------
+    Ciphertext conv_pmult_ct;
+    conv2d_pmult_accum_multi_in(
+        image_cts_seal, kernel_flat_cin, Cin, H, W, KH, KW, plain_mod, evaluator, conv_pmult_ct);
+    const std::vector<size_t> valid_indices = cheetah_valid_output_indices(H, W, KH, KW, N);
+    extract_valid_coeffs_inplace(conv_pmult_ct, evaluator, valid_indices);
 
+    Plaintext conv_pmult_pt;
+    decryptor.decrypt(conv_pmult_ct, conv_pmult_pt);
+    auto coeff_at = [&](size_t idx) -> uint64_t { return (idx < conv_pmult_pt.coeff_count()) ? conv_pmult_pt[idx] : 0ULL; };
+
+    size_t pmult_mismatches = 0;
+    for (size_t idx : valid_indices) {
+        const int64_t got = decode_plain_coeff_to_signed(coeff_at(idx), plain_mod);
+        if (got != ref_poly[idx]) ++pmult_mismatches;
+    }
+
+    std::cout << "[SEAL PMult conv: multi input channels]\n";
+    std::cout << "Cin=" << Cin << ", N=" << N << ", HxW=" << H << "x" << W << ", K=" << KH << "x" << KW
+              << ", valid_count=" << valid_indices.size() << ", valid_mismatches=" << pmult_mismatches << "\n";
     std::cout << "sample(valid outputs, first 12)\n";
     size_t printed = 0;
     for (size_t r = 0; r + KH <= H && printed < 12; ++r) {
         for (size_t c = 0; c + KW <= W && printed < 12; ++c) {
-            const size_t idx = out_base + r * W + c; // same as valid_indices order
+            const size_t idx = out_base + r * W + c;
             const int64_t got = decode_plain_coeff_to_signed(coeff_at(idx), plain_mod);
-            const int64_t exp = ref_poly[idx];
-            std::cout << "  [" << idx << "] expected=" << exp << ", got=" << got << "\n";
+            std::cout << "  [" << idx << "] expected=" << ref_poly[idx] << ", got=" << got << "\n";
             ++printed;
         }
     }
 
     // ---------------------------
-    // _mod2k conv via rotate + CMult + accumulate
+    // mod2k rotate+CMult (multi-in-channel accumulate)
     // ---------------------------
-    const uint64_t mask = (1ULL << log_q) - 1ULL;
-    std::vector<uint64_t> image_mod2k(N, 0);
-    for (size_t i = 0; i < H * W; ++i) {
-        image_mod2k[i] = static_cast<uint64_t>(image[i]) & mask;
-    }
-    scale_by_pow2_inplace(image_mod2k, delta_shift, static_cast<int>(log_q));
-    Plaintext image_pt_mod2k = vector_to_plaintext_coeff(image_mod2k, N, static_cast<int>(log_q));
+    Ciphertext conv_rot_ct_mod2k;
+    conv2d_rot_cmult_accum_multi_in_mod2k(
+        image_cts_mod2k, kernel_flat_cin, Cin, H, W, KH, KW, log_q, conv_rot_ct_mod2k);
 
-    Ciphertext image_ct_mod2k;
-    encrypt_zero_nttfree(context, image_ct_mod2k, sk_pt, log_q);
-    add_plain_to_ct_inplace_mod2k(image_ct_mod2k, image_pt_mod2k, log_q);
+    Plaintext conv_rot_scaled_pt_mod2k;
+    decrypt_nttfree(context, conv_rot_ct_mod2k, sk_pt, conv_rot_scaled_pt_mod2k, log_q);
+    std::vector<int64_t> conv_rot_decoded =
+        decode_divide_pow2(conv_rot_scaled_pt_mod2k, delta_shift, static_cast<int>(log_q), N);
+
+    const auto valid_rot_indices = valid_output_indices_rot_cmult_mod2k(H, W, KH, KW, N);
+    size_t rot_mismatches = 0;
+    for (size_t idx : valid_rot_indices) {
+        if (conv_rot_decoded[idx] != ref_rot[idx]) ++rot_mismatches;
+    }
+
+    std::cout << "[_mod2k rotate+CMult conv: multi input channels]\n";
+    std::cout << "Cin=" << Cin << ", N=" << N << ", log_q=" << log_q
+              << ", valid_count=" << valid_rot_indices.size() << ", valid_mismatches=" << rot_mismatches << "\n";
+    std::cout << "sample(valid outputs, first 12)\n";
+    printed = 0;
+    for (size_t r = 0; r + KH <= H && printed < 12; ++r) {
+        for (size_t c = 0; c + KW <= W && printed < 12; ++c) {
+            const size_t idx = r * W + c;
+            std::cout << "  [" << idx << "] expected=" << ref_rot[idx] << ", got=" << conv_rot_decoded[idx] << "\n";
+            ++printed;
+        }
+    }
 
     // ---------------------------
     // Speed benchmark (conv core only)
@@ -162,68 +186,28 @@ int main()
 
     const auto t0_pmult = Clock::now();
     for (int i = 0; i < iters; ++i) {
-        Ciphertext ct_work = image_ct;
-        evaluator.multiply_plain_inplace(ct_work, kernel_pt);
-        // extract_valid_coeffs_inplace(ct_work, evaluator, valid_indices);
+        Ciphertext ct_work;
+        conv2d_pmult_accum_multi_in(
+            image_cts_seal, kernel_flat_cin, Cin, H, W, KH, KW, plain_mod, evaluator, ct_work);
+        extract_valid_coeffs_inplace(ct_work, evaluator, valid_indices);
         bench_checksum ^= ct_work.data(0)[out_base];
     }
     const auto t1_pmult = Clock::now();
     const double pmult_us =
         static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(t1_pmult - t0_pmult).count());
 
-    const auto valid_rot_indices = valid_output_indices_rot_cmult_mod2k(H, W, KH, KW, N);
     const auto t0_rot = Clock::now();
     for (int i = 0; i < iters; ++i) {
         Ciphertext ct_work;
-        conv2d_rot_cmult_accum_mod2k(image_ct_mod2k, kernel, H, W, KH, KW, log_q, ct_work);
+        conv2d_rot_cmult_accum_multi_in_mod2k(
+            image_cts_mod2k, kernel_flat_cin, Cin, H, W, KH, KW, log_q, ct_work);
         bench_checksum ^= ct_work.data(0)[0];
     }
     const auto t1_rot = Clock::now();
     const double rot_us =
         static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(t1_rot - t0_rot).count());
 
-    Ciphertext conv_rot_ct_mod2k;
-    conv2d_rot_cmult_accum_mod2k(image_ct_mod2k, kernel, H, W, KH, KW, log_q, conv_rot_ct_mod2k);
-
-    Plaintext conv_rot_scaled_pt_mod2k;
-    decrypt_nttfree(context, conv_rot_ct_mod2k, sk_pt, conv_rot_scaled_pt_mod2k, log_q);
-    std::vector<int64_t> conv_rot_decoded =
-        decode_divide_pow2(conv_rot_scaled_pt_mod2k, delta_shift, static_cast<int>(log_q), N);
-
-    const auto centered_mod2k = [&](size_t idx) -> int64_t { return conv_rot_decoded[idx]; };
-
-    size_t valid_rot_mismatches = 0;
-    for (size_t idx : valid_rot_indices) {
-        if (centered_mod2k(idx) != ref_rot[idx]) ++valid_rot_mismatches;
-    }
-
-    size_t nonvalid_rot_nonzero = 0;
-    std::vector<char> is_valid_rot(N, 0);
-    for (size_t idx : valid_rot_indices) is_valid_rot[idx] = 1;
-    for (size_t i = 0; i < N; ++i) {
-        if (is_valid_rot[i]) continue;
-        if (centered_mod2k(i) != 0) ++nonvalid_rot_nonzero;
-    }
-
-    std::cout << "[_mod2k conv via rotate+CMult+accumulate]\n";
-    std::cout << "N=" << N << ", log_q=" << log_q << ", delta_shift=" << delta_shift
-              << ", valid_count=" << valid_rot_indices.size()
-              << ", valid_mismatches=" << valid_rot_mismatches
-              << ", nonvalid_nonzero=" << nonvalid_rot_nonzero << "\n";
-
-    std::cout << "sample(valid outputs, first 12)\n";
-    printed = 0;
-    for (size_t r = 0; r + KH <= H && printed < 12; ++r) {
-        for (size_t c = 0; c + KW <= W && printed < 12; ++c) {
-            const size_t idx = r * W + c;
-            const int64_t got = centered_mod2k(idx);
-            const int64_t exp = ref_rot[idx];
-            std::cout << "  [" << idx << "] expected=" << exp << ", got=" << got << "\n";
-            ++printed;
-        }
-    }
-
-    std::cout << "[Speed comparison: conv core only]\n";
+    std::cout << "[Speed comparison: conv core only, multi input channels]\n";
     std::cout << "iters=" << iters << "\n";
     std::cout << "  pmult+extract total_us=" << pmult_us << ", avg_us=" << (pmult_us / iters) << "\n";
     std::cout << "  rot+cmult+accum_mod2k total_us=" << rot_us << ", avg_us=" << (rot_us / iters) << "\n";

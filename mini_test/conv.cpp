@@ -304,3 +304,91 @@ void rotate_multiply_scalar_add_ct_mod2k(
     std::vector<uint64_t> rotated(input_ct.poly_modulus_degree(), 0);
     rotate_multiply_scalar_add_ct_mod2k_impl(input_ct, shift, a, log_q, acc_ct, rotated);
 }
+
+void conv2d_pmult_accum_multi_in(
+    const std::vector<seal::Ciphertext> &input_cts,
+    const std::vector<int64_t> &kernel_flat_cin,
+    size_t Cin,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    uint64_t plain_modulus,
+    const seal::Evaluator &evaluator,
+    seal::Ciphertext &out_ct)
+{
+    if (Cin == 0) throw std::invalid_argument("Cin must be non-zero");
+    if (input_cts.size() != Cin) throw std::invalid_argument("input_cts size must be Cin");
+    if (kernel_flat_cin.size() != Cin * KH * KW) {
+        throw std::invalid_argument("kernel_flat_cin size must be Cin*KH*KW");
+    }
+    if (H == 0 || W == 0 || KH == 0 || KW == 0) {
+        throw std::invalid_argument("H/W/KH/KW must be non-zero");
+    }
+    if (KH > H || KW > W) throw std::invalid_argument("KH/KW must be <= H/W");
+
+    const size_t N = input_cts[0].poly_modulus_degree();
+    for (size_t ch = 1; ch < Cin; ++ch) {
+        if (input_cts[ch].size() != input_cts[0].size()) {
+            throw std::invalid_argument("ciphertext size mismatch across channels");
+        }
+        if (input_cts[ch].poly_modulus_degree() != N) {
+            throw std::invalid_argument("poly_modulus_degree mismatch across channels");
+        }
+    }
+
+    bool init = false;
+    for (size_t ch = 0; ch < Cin; ++ch) {
+        std::vector<int64_t> kernel_ch(KH * KW, 0);
+        const size_t base = ch * KH * KW;
+        for (size_t i = 0; i < KH * KW; ++i) {
+            kernel_ch[i] = kernel_flat_cin[base + i];
+        }
+
+        seal::Plaintext kernel_pt = build_conv_kernel_plain(kernel_ch, KH, KW, W, N, plain_modulus);
+        seal::Ciphertext term = input_cts[ch];
+        evaluator.multiply_plain_inplace(term, kernel_pt);
+        if (!init) {
+            out_ct = term;
+            init = true;
+        } else {
+            evaluator.add_inplace(out_ct, term);
+        }
+    }
+}
+
+void conv2d_rot_cmult_accum_multi_in_mod2k(
+    const std::vector<seal::Ciphertext> &input_cts,
+    const std::vector<int64_t> &kernel_flat_cin,
+    size_t Cin,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    uint64_t log_q,
+    seal::Ciphertext &out_ct)
+{
+    if (Cin == 0) throw std::invalid_argument("Cin must be non-zero");
+    if (input_cts.size() != Cin) throw std::invalid_argument("input_cts size must be Cin");
+    if (kernel_flat_cin.size() != Cin * KH * KW) {
+        throw std::invalid_argument("kernel_flat_cin size must be Cin*KH*KW");
+    }
+
+    bool init = false;
+    for (size_t ch = 0; ch < Cin; ++ch) {
+        std::vector<int64_t> kernel_ch(KH * KW, 0);
+        const size_t base = ch * KH * KW;
+        for (size_t i = 0; i < KH * KW; ++i) {
+            kernel_ch[i] = kernel_flat_cin[base + i];
+        }
+
+        seal::Ciphertext term;
+        conv2d_rot_cmult_accum_mod2k(input_cts[ch], kernel_ch, H, W, KH, KW, log_q, term);
+        if (!init) {
+            out_ct = term;
+            init = true;
+        } else {
+            add_ct_inplace_mod2k(out_ct, term, log_q);
+        }
+    }
+}
