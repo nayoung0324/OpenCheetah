@@ -31,10 +31,17 @@ int main()
     constexpr int delta_shift = 20;
 
     const std::vector<BenchCase> cases = {
-        { 32, 16, 16, 40 },
-        { 16, 64, 64, 16 },
-        { 4, 128, 128, 8 },
-        { 64, 8, 8, 10 },
+        { 224, 64, 64, 2 },
+        { 64, 64, 64, 3 },
+        { 56, 256, 256, 1 },
+        { 32, 16, 16, 20 },
+        { 32, 128, 128, 2 },
+        { 28, 512, 512, 1 },
+        { 16, 64, 64, 10 },
+        { 16, 256, 256, 2 },
+        // Skip (14,1024,256) because fw=1 in the provided table.
+        { 8, 128, 128, 6 },
+        { 4, 512, 512, 3 },
     };
 
     EncryptionParameters parms(scheme_type::bfv);
