@@ -164,7 +164,7 @@ int main()
     for (int i = 0; i < iters; ++i) {
         Ciphertext ct_work = image_ct;
         evaluator.multiply_plain_inplace(ct_work, kernel_pt);
-        extract_valid_coeffs_inplace(ct_work, evaluator, valid_indices);
+        // extract_valid_coeffs_inplace(ct_work, evaluator, valid_indices);
         bench_checksum ^= ct_work.data(0)[out_base];
     }
     const auto t1_pmult = Clock::now();
