@@ -37,6 +37,7 @@ static inline void negacyclic_convolution_mod2k(
     }
 }
 
+// Reduce polynomial coefficients into [0, 2^k) by bit masking.
 void reduce_poly_mod2k(uint64_t *dst, const uint64_t *src, size_t n, uint64_t log_q)
 {
     if (log_q == 0 || log_q > 62) throw std::invalid_argument("log_q must be in [1,62]");
@@ -44,6 +45,7 @@ void reduce_poly_mod2k(uint64_t *dst, const uint64_t *src, size_t n, uint64_t lo
     for (size_t i = 0; i < n; ++i) dst[i] = src[i] & mask;
 }
 
+// Negacyclic multiply by secret-key-like ternary polynomial under mod 2^k.
 void multiply_poly_secret_mod2k(
     const uint64_t *a, const uint64_t *s, uint64_t q_seal, uint64_t *out, size_t n, uint64_t log_q)
 {
@@ -78,6 +80,7 @@ void multiply_poly_secret_mod2k(
     }
 }
 
+// Negacyclic coefficient rotation by `shift` under x^N = -1 in mod 2^k.
 void rotate_poly_coeff_mod2k(
     const uint64_t *src, uint64_t *dst, size_t n, int64_t shift, uint64_t log_q)
 {
@@ -144,7 +147,8 @@ void rotate_poly_coeff_mod2k(
     }
 }
 
-void add_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &pt, uint64_t log_q)
+// Add plaintext to ciphertext c0 component in-place under mod 2^k.
+void add_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &pt, uint64_t log_q)
 {
     if (ct.size() < 1) throw std::invalid_argument("ciphertext must have at least one component");
     if (pt.coeff_count() != ct.poly_modulus_degree()) {
@@ -158,7 +162,14 @@ void add_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &
     }
 }
 
-void sub_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &pt, uint64_t log_q)
+// Backward-compatible wrapper: ct += pt (c0 only).
+void add_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &pt, uint64_t log_q)
+{
+    add_inplace_mod2k(ct, pt, log_q);
+}
+
+// Subtract plaintext from ciphertext c0 component in-place under mod 2^k.
+void sub_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &pt, uint64_t log_q)
 {
     if (ct.size() < 1) throw std::invalid_argument("ciphertext must have at least one component");
     if (pt.coeff_count() != ct.poly_modulus_degree()) {
@@ -171,7 +182,14 @@ void sub_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &
     }
 }
 
-void add_ct_inplace_mod2k(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_src, uint64_t log_q)
+// Backward-compatible wrapper: ct -= pt (c0 only).
+void sub_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &pt, uint64_t log_q)
+{
+    sub_inplace_mod2k(ct, pt, log_q);
+}
+
+// Add ciphertext to ciphertext component-wise in-place under mod 2^k.
+void add_inplace_mod2k(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_src, uint64_t log_q)
 {
     if (ct_dst.size() != ct_src.size()) throw std::invalid_argument("ciphertext size mismatch");
     if (ct_dst.poly_modulus_degree() != ct_src.poly_modulus_degree()) {
@@ -191,6 +209,13 @@ void add_ct_inplace_mod2k(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_s
     }
 }
 
+// Backward-compatible wrapper: ct += ct.
+void add_ct_inplace_mod2k(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_src, uint64_t log_q)
+{
+    add_inplace_mod2k(ct_dst, ct_src, log_q);
+}
+
+// Slightly unrolled variant of ciphertext addition for micro-benchmarking.
 void add_ct_inplace_mod2k_fast(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_src, uint64_t log_q)
 {
     if (ct_dst.size() != ct_src.size()) throw std::invalid_argument("ciphertext size mismatch");
@@ -225,7 +250,8 @@ void add_ct_inplace_mod2k_fast(seal::Ciphertext &ct_dst, const seal::Ciphertext 
     }
 }
 
-void sub_ct_inplace_mod2k(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_src, uint64_t log_q)
+// Subtract ciphertext from ciphertext component-wise in-place under mod 2^k.
+void sub_inplace_mod2k(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_src, uint64_t log_q)
 {
     if (ct_dst.size() != ct_src.size()) throw std::invalid_argument("ciphertext size mismatch");
     if (ct_dst.poly_modulus_degree() != ct_src.poly_modulus_degree()) {
@@ -245,6 +271,13 @@ void sub_ct_inplace_mod2k(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_s
     }
 }
 
+// Backward-compatible wrapper: ct -= ct.
+void sub_ct_inplace_mod2k(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_src, uint64_t log_q)
+{
+    sub_inplace_mod2k(ct_dst, ct_src, log_q);
+}
+
+// Multiply all ciphertext components by a scalar in-place under mod 2^k.
 void mul_const_ct_inplace_mod2k(seal::Ciphertext &ct, uint64_t scalar, uint64_t log_q)
 {
     if (ct.size() < 2) throw std::invalid_argument("ciphertext must have at least two components");
@@ -263,6 +296,7 @@ void mul_const_ct_inplace_mod2k(seal::Ciphertext &ct, uint64_t scalar, uint64_t 
     }
 }
 
+// Multiply ciphertext by plaintext (negacyclic convolution per component) under mod 2^k.
 void mul_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &pt, uint64_t log_q)
 {
     if (ct.size() < 2) throw std::invalid_argument("ciphertext must have at least two components");
@@ -282,6 +316,7 @@ void mul_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &
     }
 }
 
+// Rotate each ciphertext component by `shift` under mod 2^k.
 void rotate_ct_coeff_inplace_mod2k(seal::Ciphertext &ct, int64_t shift, uint64_t log_q)
 {
     if (ct.size() < 1) throw std::invalid_argument("ciphertext must have at least one component");

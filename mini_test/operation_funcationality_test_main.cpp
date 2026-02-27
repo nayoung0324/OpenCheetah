@@ -114,11 +114,11 @@ int main()
     // Encrypt: first encrypt zero, then inject message into c0 (RLWE form).
     Ciphertext ct;
     encrypt_zero_nttfree(context, ct, sk_pt, log_q);
-    add_plain_to_ct_inplace_mod2k(ct, m_pt, log_q);
+    add_inplace_mod2k(ct, m_pt, log_q);
 
     Ciphertext ct2;
     encrypt_zero_nttfree(context, ct2, sk_pt, log_q);
-    add_plain_to_ct_inplace_mod2k(ct2, m_pt2, log_q);
+    add_inplace_mod2k(ct2, m_pt2, log_q);
 
     // Decrypt + decode with same (k, Delta) parameters.
     const int Hpad = H + (kernel_k - 1);
@@ -155,7 +155,7 @@ int main()
 
     // Test: ciphertext + ciphertext (mod 2^k), then decrypt/decode again.
     Ciphertext ct_add = ct;
-    add_ct_inplace_mod2k(ct_add, ct, log_q);
+    add_inplace_mod2k(ct_add, ct, log_q);
 
     std::vector<int64_t> decoded_add =
         decrypt_and_decode_nttfree(context, ct_add, sk_pt, log_q, delta_shift, used_coeff_count);
@@ -172,7 +172,7 @@ int main()
 
     // Test: ciphertext #1 - ciphertext #2 (mod 2^k), then decrypt/decode again.
     Ciphertext ct_sub = ct;
-    sub_ct_inplace_mod2k(ct_sub, ct2, log_q);
+    sub_inplace_mod2k(ct_sub, ct2, log_q);
 
     std::vector<int64_t> decoded_sub =
         decrypt_and_decode_nttfree(context, ct_sub, sk_pt, log_q, delta_shift, used_coeff_count);
@@ -190,7 +190,7 @@ int main()
 
     // Test: ciphertext + plaintext (mod 2^k), then decrypt/decode again.
     Ciphertext ct_addpt = ct;
-    add_plain_to_ct_inplace_mod2k(ct_addpt, m_pt2, log_q);
+    add_inplace_mod2k(ct_addpt, m_pt2, log_q);
 
     std::vector<int64_t> decoded_addpt =
         decrypt_and_decode_nttfree(context, ct_addpt, sk_pt, log_q, delta_shift, used_coeff_count);
@@ -207,7 +207,7 @@ int main()
 
     // Test: ciphertext - plaintext (mod 2^k), then decrypt/decode again.
     Ciphertext ct_subpt = ct;
-    sub_plain_to_ct_inplace_mod2k(ct_subpt, m_pt2, log_q);
+    sub_inplace_mod2k(ct_subpt, m_pt2, log_q);
 
     std::vector<int64_t> decoded_subpt =
         decrypt_and_decode_nttfree(context, ct_subpt, sk_pt, log_q, delta_shift, used_coeff_count);

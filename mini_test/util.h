@@ -22,6 +22,16 @@ void multiply_poly_secret_mod2k(
 void rotate_poly_coeff_mod2k(
     const uint64_t *src, uint64_t *dst, size_t n, int64_t shift, uint64_t log_q);
 
+// Overloaded additions:
+// 1) ct += pt (applies to c0 only), 2) ct += ct (component-wise).
+void add_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &pt, uint64_t log_q);
+void add_inplace_mod2k(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_src, uint64_t log_q);
+// Overloaded subtractions:
+// 1) ct -= pt (applies to c0 only), 2) ct -= ct (component-wise).
+void sub_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &pt, uint64_t log_q);
+void sub_inplace_mod2k(seal::Ciphertext &ct_dst, const seal::Ciphertext &ct_src, uint64_t log_q);
+
+// Backward-compatible wrappers (kept for existing call sites).
 void add_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &pt, uint64_t log_q);
 void sub_plain_to_ct_inplace_mod2k(seal::Ciphertext &ct, const seal::Plaintext &pt, uint64_t log_q);
 

@@ -93,6 +93,7 @@ std::vector<int64_t> decode_divide_pow2(
     return out;
 }
 
+// Convenience wrapper: decrypt with mod-2^k path and decode by dividing Delta.
 std::vector<int64_t> decrypt_and_decode_nttfree(
     const SEALContext &context,
     const Ciphertext &ct,
@@ -123,6 +124,7 @@ static inline int64_t center_lift_prime_signed(uint64_t x, uint64_t p)
     return static_cast<int64_t>(x) - static_cast<int64_t>(p);
 }
 
+// Decrypt by computing c1*s in an auxiliary NTT prime q', then map the result back to mod 2^k.
 void decrypt_auxprime_ntt_to_mod2k(
     const SEALContext &context,
     const Ciphertext &ct,
@@ -209,6 +211,7 @@ void decrypt_auxprime_ntt_to_mod2k(
     }
 }
 
+// Convenience wrapper: auxiliary-prime decryption followed by Delta decode.
 std::vector<int64_t> decrypt_and_decode_auxprime_ntt(
     const SEALContext &context,
     const Ciphertext &ct,

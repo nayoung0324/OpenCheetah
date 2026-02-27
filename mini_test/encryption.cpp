@@ -21,6 +21,7 @@ static inline uint64_t convert_qseal_to_mod2k_signed(uint64_t x_qseal, uint64_t 
     return static_cast<uint64_t>(centered) & mask;
 }
 
+// Sample noise with SEAL's CBD sampler under q_seal, then center-lift and map to mod 2^k.
 void sample_noise_mod2k_seal_cbd(
     const EncryptionParameters &parms, uint64_t q_seal, uint64_t log_q, std::vector<uint64_t> &noise_out)
 {
@@ -37,6 +38,7 @@ void sample_noise_mod2k_seal_cbd(
     }
 }
 
+// Sample direct ternary noise in mod 2^k (values in {-1,0,1} represented in ring).
 void sample_noise_mod2k_direct_ternary(size_t coeff_count, uint64_t log_q, std::vector<uint64_t> &noise_out)
 {
     if (log_q == 0 || log_q > 62) throw std::invalid_argument("log_q must be in [1,62]");
@@ -60,6 +62,7 @@ static inline size_t idx_nhwc(int h, int w, int c, int W, int C) {
 // stride = 1로 가정
 // 출력 크기가 유지되게 패딩
 // 우선 이미지 크기가 N보다 작을 때만 생각하고, packing도 일단 고려하지 않음. 남은 부분은 0으로 채움
+// Build a zero-padded flattened tensor and place it in a polynomial-sized vector.
 std::vector<uint64_t> pad_same_to_poly_n(
     const std::vector<uint64_t> &input_flat,
     int H, int W, int C,
@@ -107,7 +110,7 @@ std::vector<uint64_t> pad_same_to_poly_n(
     return out;
 }
 
-
+// Convert a mod-2^k coefficient vector to SEAL plaintext coefficients.
 seal::Plaintext vector_to_plaintext_coeff(
     const std::vector<uint64_t> &coeffs_mod2k,
     size_t poly_N,
@@ -128,6 +131,7 @@ seal::Plaintext vector_to_plaintext_coeff(
     return pt;
 }
 
+// Multiply plaintext coefficients by 2^delta_shift in-place modulo 2^k.
 void scale_by_pow2_inplace(
     std::vector<uint64_t> &coeffs,
     int delta_shift,   // log2(delta), e.g., 20
@@ -140,12 +144,14 @@ void scale_by_pow2_inplace(
     const uint64_t mask = (1ULL << k) - 1ULL;
 
     for (auto &x : coeffs) {
-        uint64_t u = static_cast<uint64_t>(x) & mask;      // mod 2^k
+        // uint64_t u = static_cast<uint64_t>(x) & mask;   // defensive reduction (redundant if coeffs already mod 2^k)
+        uint64_t u = static_cast<uint64_t>(x);
         u = (u << delta_shift) & mask;                     // multiply by 2^delta_shift mod 2^k
         x = static_cast<int64_t>(u);                       // keep stored as int64_t (still mod space)
     }
 }
 
+// Custom NTT-free encryption of zero under mod-2^k arithmetic with ciphertext shape (c0,c1).
 void encrypt_zero_nttfree(
     const SEALContext &context, Ciphertext &temp_out, const Plaintext &sk, uint64_t log_q)
 {

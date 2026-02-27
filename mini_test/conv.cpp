@@ -13,6 +13,7 @@ size_t idx2d(size_t r, size_t c, size_t W)
     return r * W + c;
 }
 
+// Internal fused primitive: rotate one ciphertext, multiply by scalar, and accumulate.
 void rotate_multiply_scalar_add_ct_mod2k_impl(
     const seal::Ciphertext &input_ct,
     int64_t shift,
@@ -35,6 +36,7 @@ void rotate_multiply_scalar_add_ct_mod2k_impl(
 }
 } // namespace
 
+// Encode signed integer to non-negative residue modulo plaintext modulus.
 uint64_t encode_signed_to_plain_coeff(int64_t v, uint64_t plain_modulus)
 {
     if (!plain_modulus) throw std::invalid_argument("plain_modulus must be non-zero");
@@ -44,6 +46,7 @@ uint64_t encode_signed_to_plain_coeff(int64_t v, uint64_t plain_modulus)
     return static_cast<uint64_t>(x);
 }
 
+// Decode plaintext residue to centered signed integer representative.
 int64_t decode_plain_coeff_to_signed(uint64_t v, uint64_t plain_modulus)
 {
     if (!plain_modulus) throw std::invalid_argument("plain_modulus must be non-zero");
@@ -53,6 +56,7 @@ int64_t decode_plain_coeff_to_signed(uint64_t v, uint64_t plain_modulus)
     return static_cast<int64_t>(v) - static_cast<int64_t>(plain_modulus);
 }
 
+// Encode single-channel image coefficients directly into plaintext polynomial.
 seal::Plaintext encode_image_coeff_plain(
     const std::vector<int64_t> &image_flat, size_t H, size_t W, size_t N, uint64_t plain_modulus)
 {
@@ -71,6 +75,7 @@ seal::Plaintext encode_image_coeff_plain(
     return pt;
 }
 
+// Build Cheetah-style filter plaintext for PMult (single-channel).
 seal::Plaintext build_conv_kernel_plain(
     const std::vector<int64_t> &kernel_flat, size_t KH, size_t KW, size_t W, size_t N, uint64_t plain_modulus)
 {
@@ -95,12 +100,14 @@ seal::Plaintext build_conv_kernel_plain(
     return pt;
 }
 
+// Return Cheetah filter base index for coefficient layout.
 size_t cheetah_filter_base_index(size_t KH, size_t KW, size_t W)
 {
     if (KH == 0 || KW == 0 || W == 0) throw std::invalid_argument("KH/KW/W must be non-zero");
     return W * (KH - 1) + (KW - 1);
 }
 
+// Plaintext reference conv matching Cheetah coefficient placement (valid region only).
 std::vector<int64_t> conv2d_reference_poly_cheetah_valid(
     const std::vector<int64_t> &image_flat,
     size_t H,
@@ -137,6 +144,7 @@ std::vector<int64_t> conv2d_reference_poly_cheetah_valid(
     return out;
 }
 
+// List valid output coefficient indices for Cheetah conv layout.
 std::vector<size_t> cheetah_valid_output_indices(size_t H, size_t W, size_t KH, size_t KW, size_t N)
 {
     if (H == 0 || W == 0 || KH == 0 || KW == 0 || N == 0) {
@@ -158,6 +166,7 @@ std::vector<size_t> cheetah_valid_output_indices(size_t H, size_t W, size_t KH, 
     return out;
 }
 
+// Build a plaintext 0/1 mask that keeps only valid output coefficients.
 seal::Plaintext build_extract_mask_plain(
     const std::vector<size_t> &valid_indices, size_t N, uint64_t plain_modulus)
 {
@@ -172,6 +181,7 @@ seal::Plaintext build_extract_mask_plain(
     return pt;
 }
 
+// Cheetah-style extract: zero out unused coefficients in c0.
 void extract_valid_coeffs_inplace(
     seal::Ciphertext &ct, const seal::Evaluator &evaluator, const std::vector<size_t> &valid_indices)
 {
@@ -206,6 +216,7 @@ void extract_valid_coeffs_inplace(
     }
 }
 
+// _mod2k single-channel conv by rotate + scalar multiply + accumulate.
 void conv2d_rot_cmult_accum_mod2k(
     const seal::Ciphertext &input_ct,
     const std::vector<int64_t> &kernel_flat,
@@ -254,6 +265,7 @@ void conv2d_rot_cmult_accum_mod2k(
     }
 }
 
+// Valid output indices for rotate+CMult conv layout.
 std::vector<size_t> valid_output_indices_rot_cmult_mod2k(
     size_t H, size_t W, size_t KH, size_t KW, size_t N)
 {
@@ -277,6 +289,7 @@ std::vector<size_t> valid_output_indices_rot_cmult_mod2k(
     return out;
 }
 
+// Public wrapper of fused rotate-multiply-accumulate primitive.
 void rotate_multiply_scalar_add_ct_mod2k(
     const seal::Ciphertext &input_ct,
     int64_t shift,
@@ -306,6 +319,7 @@ void rotate_multiply_scalar_add_ct_mod2k(
     rotate_multiply_scalar_add_ct_mod2k_impl(input_ct, shift, a, log_q, acc_ct, rotated);
 }
 
+// Multi-input-channel PMult conv with one ciphertext per input channel.
 void conv2d_pmult_accum_multi_in(
     const std::vector<seal::Ciphertext> &input_cts,
     const std::vector<int64_t> &kernel_flat_cin,
@@ -358,6 +372,7 @@ void conv2d_pmult_accum_multi_in(
     }
 }
 
+// Multi-input-channel _mod2k conv with one ciphertext per input channel.
 void conv2d_rot_cmult_accum_multi_in_mod2k(
     const std::vector<seal::Ciphertext> &input_cts,
     const std::vector<int64_t> &kernel_flat_cin,
@@ -394,6 +409,7 @@ void conv2d_rot_cmult_accum_multi_in_mod2k(
     }
 }
 
+// Pack multiple input channels into one plaintext polynomial.
 seal::Plaintext encode_image_coeff_plain_packed(
     const std::vector<std::vector<int64_t>> &images,
     size_t ch_begin,
@@ -429,6 +445,7 @@ seal::Plaintext encode_image_coeff_plain_packed(
     return pt;
 }
 
+// Build packed multi-channel kernel plaintext for PMult.
 seal::Plaintext build_conv_kernel_plain_packed(
     const std::vector<int64_t> &kernel_flat_cin,
     size_t Cin,
@@ -473,6 +490,7 @@ seal::Plaintext build_conv_kernel_plain_packed(
     return pt;
 }
 
+// PMult conv with packed input channels, then channel-group accumulation.
 void conv2d_pmult_accum_multi_in_packed(
     const std::vector<seal::Ciphertext> &input_cts_packed,
     const std::vector<int64_t> &kernel_flat_cin,
@@ -516,6 +534,7 @@ void conv2d_pmult_accum_multi_in_packed(
     }
 }
 
+// _mod2k conv with packed input channels (within-group rotate offsets).
 void conv2d_rot_cmult_accum_multi_in_packed_mod2k(
     const std::vector<seal::Ciphertext> &input_cts_packed,
     const std::vector<int64_t> &kernel_flat_cin,
@@ -568,6 +587,7 @@ void conv2d_rot_cmult_accum_multi_in_packed_mod2k(
     }
 }
 
+// Multi-output PMult wrapper: run one packed PMult conv per output channel.
 void conv2d_pmult_multi_out_packed(
     const std::vector<seal::Ciphertext> &input_cts_packed,
     const std::vector<int64_t> &kernels_flat_co_cin,
@@ -608,6 +628,7 @@ void conv2d_pmult_multi_out_packed(
     }
 }
 
+// Multi-output _mod2k wrapper: run one _mod2k conv per output channel.
 void conv2d_rot_cmult_multi_out_mod2k(
     const std::vector<seal::Ciphertext> &input_cts,
     const std::vector<int64_t> &kernels_flat_co_cin,
@@ -636,6 +657,7 @@ void conv2d_rot_cmult_multi_out_mod2k(
     }
 }
 
+// Build valid-conv tile plan under an input coefficient budget.
 std::vector<Conv2DTile> make_conv2d_tiles_valid(
     size_t H, size_t W, size_t KH, size_t KW, size_t max_input_coeffs)
 {
@@ -697,6 +719,7 @@ std::vector<Conv2DTile> make_conv2d_tiles_valid(
     return tiles;
 }
 
+// Extract one input patch corresponding to a tile (including halo overlap).
 std::vector<int64_t> extract_input_patch_by_tile(
     const std::vector<int64_t> &image_flat, size_t H, size_t W, const Conv2DTile &tile)
 {
@@ -714,6 +737,7 @@ std::vector<int64_t> extract_input_patch_by_tile(
     return patch;
 }
 
+// Scatter one tile output patch back to the full output tensor.
 void scatter_output_patch_by_tile(
     const std::vector<int64_t> &patch_out,
     const Conv2DTile &tile,
