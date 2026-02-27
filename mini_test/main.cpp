@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "conv.h"
+#include "decryption.h"
 #include "encryption.h"
 #include "util.h"
 
@@ -58,6 +59,7 @@ int main()
     keygen.create_public_key(pk);
     Encryptor encryptor(context, pk);
     Evaluator evaluator(context);
+    Decryptor decryptor(context, sk);
 
     uint64_t global_checksum = 0;
     std::mt19937_64 rng(20260227ULL);
@@ -73,6 +75,8 @@ int main()
         const size_t Co = bc.cout;
         const int iters = bc.iters;
         const size_t one_ch = H * W;
+        const size_t out_h = H - KH + 1;
+        const size_t out_w = W - KW + 1;
 
         // Input images.
         std::vector<std::vector<int64_t>> images(Cin, std::vector<int64_t>(one_ch, 0));
@@ -92,8 +96,28 @@ int main()
             }
         }
 
+        // Reference full outputs per output channel.
+        std::vector<std::vector<int64_t>> ref_out(Co, std::vector<int64_t>(out_h * out_w, 0));
+        for (size_t co = 0; co < Co; ++co) {
+            for (size_t r = 0; r < out_h; ++r) {
+                for (size_t c = 0; c < out_w; ++c) {
+                    int64_t acc = 0;
+                    for (size_t ci = 0; ci < Cin; ++ci) {
+                        const size_t kbase = (co * Cin + ci) * KH * KW;
+                        for (size_t kr = 0; kr < KH; ++kr) {
+                            for (size_t kc = 0; kc < KW; ++kc) {
+                                acc += images[ci][(r + kr) * W + (c + kc)] * kernels_flat_co_cin[kbase + kr * KW + kc];
+                            }
+                        }
+                    }
+                    ref_out[co][r * out_w + c] = acc;
+                }
+            }
+        }
+
         struct TilePrepared
         {
+            Conv2DTile tile;
             size_t tile_in_h;
             size_t tile_in_w;
             size_t channels_per_ct;
@@ -106,6 +130,7 @@ int main()
         std::vector<TilePrepared> prepared_tiles;
         if (one_ch <= N) {
             TilePrepared tp;
+            tp.tile = { 0, 0, out_h, out_w, H, W };
             tp.tile_in_h = H;
             tp.tile_in_w = W;
             tp.channels_per_ct = N / one_ch;
@@ -141,6 +166,7 @@ int main()
             const auto tiles = make_conv2d_tiles_valid(H, W, KH, KW, N);
             for (const auto &tile : tiles) {
                 TilePrepared tp;
+                tp.tile = tile;
                 tp.tile_in_h = tile.in_h;
                 tp.tile_in_w = tile.in_w;
                 const size_t tile_one_ch = tile.in_h * tile.in_w;
@@ -180,6 +206,67 @@ int main()
                     }
                 }
                 prepared_tiles.push_back(std::move(tp));
+            }
+        }
+
+        // Correctness check (single run): assemble tile outputs and compare with reference.
+        std::vector<std::vector<int64_t>> got_pmult(Co, std::vector<int64_t>(out_h * out_w, 0));
+        std::vector<std::vector<int64_t>> got_mod2k(Co, std::vector<int64_t>(out_h * out_w, 0));
+
+        for (const auto &tp : prepared_tiles) {
+            std::vector<Ciphertext> outs_pmult;
+            conv2d_pmult_multi_out_packed(
+                tp.image_cts_seal_packed,
+                kernels_flat_co_cin,
+                Co,
+                Cin,
+                tp.channels_per_ct,
+                tp.tile_in_h,
+                tp.tile_in_w,
+                KH,
+                KW,
+                plain_mod,
+                evaluator,
+                outs_pmult);
+            for (size_t co = 0; co < Co; ++co) {
+                extract_valid_coeffs_inplace(outs_pmult[co], evaluator, tp.valid_indices_pmult);
+                Plaintext pt;
+                decryptor.decrypt(outs_pmult[co], pt);
+                std::vector<int64_t> patch(tp.tile.out_h * tp.tile.out_w, 0);
+                for (size_t r = 0; r < tp.tile.out_h; ++r) {
+                    for (size_t c = 0; c < tp.tile.out_w; ++c) {
+                        const size_t idx = tp.out_base_packed + r * tp.tile_in_w + c;
+                        const uint64_t coeff = (idx < pt.coeff_count()) ? pt[idx] : 0ULL;
+                        patch[r * tp.tile.out_w + c] = decode_plain_coeff_to_signed(coeff, plain_mod);
+                    }
+                }
+                scatter_output_patch_by_tile(patch, tp.tile, out_w, got_pmult[co]);
+            }
+
+            std::vector<Ciphertext> outs_mod2k;
+            conv2d_rot_cmult_multi_out_mod2k(
+                tp.image_cts_mod2k, kernels_flat_co_cin, Co, Cin, tp.tile_in_h, tp.tile_in_w, KH, KW, log_q, outs_mod2k);
+            for (size_t co = 0; co < Co; ++co) {
+                Plaintext scaled;
+                decrypt_nttfree(context, outs_mod2k[co], sk_pt, scaled, log_q);
+                std::vector<int64_t> decoded = decode_divide_pow2(scaled, delta_shift, static_cast<int>(log_q), N);
+                std::vector<int64_t> patch(tp.tile.out_h * tp.tile.out_w, 0);
+                for (size_t r = 0; r < tp.tile.out_h; ++r) {
+                    for (size_t c = 0; c < tp.tile.out_w; ++c) {
+                        const size_t idx = r * tp.tile_in_w + c;
+                        patch[r * tp.tile.out_w + c] = decoded[idx];
+                    }
+                }
+                scatter_output_patch_by_tile(patch, tp.tile, out_w, got_mod2k[co]);
+            }
+        }
+
+        size_t pmult_mismatches = 0;
+        size_t mod2k_mismatches = 0;
+        for (size_t co = 0; co < Co; ++co) {
+            for (size_t i = 0; i < out_h * out_w; ++i) {
+                if (got_pmult[co][i] != ref_out[co][i]) ++pmult_mismatches;
+                if (got_mod2k[co][i] != ref_out[co][i]) ++mod2k_mismatches;
             }
         }
 
@@ -247,6 +334,8 @@ int main()
         }
         std::cout << "  cheetah_pmult total_us=" << pmult_us << ", avg_us=" << (pmult_us / iters) << "\n";
         std::cout << "  mod2k_rot_cmult total_us=" << mod2k_us << ", avg_us=" << (mod2k_us / iters) << "\n";
+        std::cout << "  correctness: pmult_mismatches=" << pmult_mismatches
+                  << ", mod2k_mismatches=" << mod2k_mismatches << "\n";
         std::cout << "  speedup(pmult/mod2k)=" << (pmult_us / mod2k_us) << "\n\n";
     }
 
