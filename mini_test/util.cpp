@@ -2,6 +2,7 @@
 
 #include <seal/seal.h>
 
+#include <cstring>
 #include <stdexcept>
 #include <vector>
 
@@ -85,21 +86,61 @@ void rotate_poly_coeff_mod2k(
     if (log_q == 0 || log_q > 62) throw std::invalid_argument("log_q must be in [1,62]");
 
     const uint64_t mask = (1ULL << log_q) - 1ULL;
-    for (size_t i = 0; i < n; ++i) dst[i] = 0;
 
-    // Negacyclic shift: coefficient i moves to i+shift with wrap sign flip (x^N = -1).
-    for (size_t i = 0; i < n; ++i) {
-        int64_t t = static_cast<int64_t>(i) + shift;
-        int64_t q = t / static_cast<int64_t>(n);
-        int64_t r = t % static_cast<int64_t>(n);
-        if (r < 0) {
-            r += static_cast<int64_t>(n);
-            --q;
+    // Handle aliasing (in-place call) safely.
+    std::vector<uint64_t> tmp;
+    const uint64_t *in = src;
+    if (src == dst) {
+        tmp.assign(src, src + n);
+        in = tmp.data();
+    }
+
+    // shift = q*n + r, r in [0, n-1]. q parity controls global sign.
+    int64_t q = shift / static_cast<int64_t>(n);
+    int64_t r = shift % static_cast<int64_t>(n);
+    if (r < 0) {
+        r += static_cast<int64_t>(n);
+        --q;
+    }
+
+    const size_t rs = static_cast<size_t>(r);
+    const bool base_neg = static_cast<bool>(q & 1LL);
+
+    // Fast-path for zero rotation: only optional global sign + masking.
+    if (rs == 0) {
+        if (!base_neg) {
+            if (in != dst) {
+                std::memcpy(dst, in, n * sizeof(uint64_t));
+            }
+            for (size_t i = 0; i < n; ++i) dst[i] &= mask;
+        } else {
+            for (size_t i = 0; i < n; ++i) {
+                dst[i] = (0ULL - (in[i] & mask)) & mask;
+            }
         }
+        return;
+    }
 
-        uint64_t v = src[i] & mask;
-        if (q & 1LL) v = (0ULL - v) & mask;
-        dst[static_cast<size_t>(r)] = v;
+    // Destination split:
+    // dst[0..rs-1]       <- in[n-rs .. n-1] (wrapped part; sign flips)
+    // dst[rs..n-1]       <- in[0 .. n-rs-1] (non-wrapped part; base sign)
+    const size_t head_len = rs;
+    const size_t tail_len = n - rs;
+
+    if (tail_len > 0) {
+        std::memcpy(dst + rs, in, tail_len * sizeof(uint64_t));
+    }
+    if (head_len > 0) {
+        std::memcpy(dst, in + tail_len, head_len * sizeof(uint64_t));
+    }
+
+    // Apply mask/sign only once per contiguous segment.
+    if (!base_neg) {
+        for (size_t i = rs; i < n; ++i) dst[i] &= mask; // non-wrapped
+        for (size_t i = 0; i < rs; ++i) dst[i] = (0ULL - (dst[i] & mask)) & mask; // wrapped
+    } else {
+        for (size_t i = rs; i < n; ++i) dst[i] = (0ULL - (dst[i] & mask)) & mask; // non-wrapped
+        for (size_t i = 0; i < rs; ++i) dst[i] &= mask; // wrapped
     }
 }
 
