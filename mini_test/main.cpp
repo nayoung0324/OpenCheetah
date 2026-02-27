@@ -1,5 +1,6 @@
 #include <seal/seal.h>
 
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <random>
@@ -11,6 +12,7 @@
 #include "util.h"
 
 using namespace seal;
+using Clock = std::chrono::high_resolution_clock;
 
 int main()
 {
@@ -21,6 +23,7 @@ int main()
     constexpr size_t KW = 3;
     constexpr uint64_t log_q = 50;
     constexpr int delta_shift = 20;
+    constexpr int iters = 200;
 
     EncryptionParameters parms(scheme_type::bfv);
     parms.set_poly_modulus_degree(N);
@@ -152,6 +155,33 @@ int main()
     encrypt_zero_nttfree(context, image_ct_mod2k, sk_pt, log_q);
     add_plain_to_ct_inplace_mod2k(image_ct_mod2k, image_pt_mod2k, log_q);
 
+    // ---------------------------
+    // Speed benchmark (conv core only)
+    // ---------------------------
+    uint64_t bench_checksum = 0;
+
+    const auto t0_pmult = Clock::now();
+    for (int i = 0; i < iters; ++i) {
+        Ciphertext ct_work = image_ct;
+        evaluator.multiply_plain_inplace(ct_work, kernel_pt);
+        extract_valid_coeffs_inplace(ct_work, evaluator, valid_indices);
+        bench_checksum ^= ct_work.data(0)[out_base];
+    }
+    const auto t1_pmult = Clock::now();
+    const double pmult_us =
+        static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(t1_pmult - t0_pmult).count());
+
+    const auto valid_rot_indices = valid_output_indices_rot_cmult_mod2k(H, W, KH, KW, N);
+    const auto t0_rot = Clock::now();
+    for (int i = 0; i < iters; ++i) {
+        Ciphertext ct_work;
+        conv2d_rot_cmult_accum_mod2k(image_ct_mod2k, kernel, H, W, KH, KW, log_q, ct_work);
+        bench_checksum ^= ct_work.data(0)[0];
+    }
+    const auto t1_rot = Clock::now();
+    const double rot_us =
+        static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(t1_rot - t0_rot).count());
+
     Ciphertext conv_rot_ct_mod2k;
     conv2d_rot_cmult_accum_mod2k(image_ct_mod2k, kernel, H, W, KH, KW, log_q, conv_rot_ct_mod2k);
 
@@ -162,7 +192,6 @@ int main()
 
     const auto centered_mod2k = [&](size_t idx) -> int64_t { return conv_rot_decoded[idx]; };
 
-    const std::vector<size_t> valid_rot_indices = valid_output_indices_rot_cmult_mod2k(H, W, KH, KW, N);
     size_t valid_rot_mismatches = 0;
     for (size_t idx : valid_rot_indices) {
         if (centered_mod2k(idx) != ref_rot[idx]) ++valid_rot_mismatches;
@@ -193,6 +222,12 @@ int main()
             ++printed;
         }
     }
+
+    std::cout << "[Speed comparison: conv core only]\n";
+    std::cout << "iters=" << iters << "\n";
+    std::cout << "  pmult+extract total_us=" << pmult_us << ", avg_us=" << (pmult_us / iters) << "\n";
+    std::cout << "  rot+cmult+accum_mod2k total_us=" << rot_us << ", avg_us=" << (rot_us / iters) << "\n";
+    std::cout << "  bench_checksum=" << bench_checksum << "\n";
 
     return 0;
 }
