@@ -303,6 +303,7 @@ int main()
         const auto t1_pmult = Clock::now();
         const double pmult_us =
             static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(t1_pmult - t0_pmult).count());
+        const double pmult_ms = pmult_us / 1000.0;
 
         // _mod2k benchmark (conv core only).
         const auto t0_mod2k = Clock::now();
@@ -328,6 +329,7 @@ int main()
         const auto t1_mod2k = Clock::now();
         const double mod2k_us =
             static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(t1_mod2k - t0_mod2k).count());
+        const double mod2k_ms = mod2k_us / 1000.0;
 
         std::cout << "Case(H=W=" << H << ", Cin=" << Cin << ", Cout=" << Co << ")\n";
         if (one_ch <= N) {
@@ -338,11 +340,11 @@ int main()
         } else {
             std::cout << "  mode=tiled(H*W>N), tiles=" << prepared_tiles.size() << ", iters=" << iters << "\n";
         }
-        std::cout << "  cheetah_pmult total_us=" << pmult_us << ", avg_us=" << (pmult_us / iters) << "\n";
-        std::cout << "  mod2k_rot_cmult total_us=" << mod2k_us << ", avg_us=" << (mod2k_us / iters) << "\n";
+        std::cout << "  cheetah_pmult total_ms=" << pmult_ms << ", avg_ms=" << (pmult_ms / iters) << "\n";
+        std::cout << "  mod2k_rot_cmult total_ms=" << mod2k_ms << ", avg_ms=" << (mod2k_ms / iters) << "\n";
         std::cout << "  correctness: pmult_mismatches=" << pmult_mismatches
                   << ", mod2k_mismatches=" << mod2k_mismatches << "\n";
-        std::cout << "  speedup(pmult/mod2k)=" << (pmult_us / mod2k_us) << "\n\n";
+        std::cout << "  speedup(pmult/mod2k)=" << (pmult_ms / mod2k_ms) << "\n\n";
     }
 
     std::cout << "checksum=" << global_checksum << "\n";
