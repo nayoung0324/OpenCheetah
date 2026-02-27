@@ -103,3 +103,57 @@ void conv2d_rot_cmult_accum_multi_in_mod2k(
     size_t KW,
     uint64_t log_q,
     seal::Ciphertext &out_ct);
+
+// Pack up to channels_per_ct input channels into one plaintext (coefficient encoding).
+// Global channel g maps to local channel (g - ch_begin) at coefficient offset local*H*W.
+seal::Plaintext encode_image_coeff_plain_packed(
+    const std::vector<std::vector<int64_t>> &images,
+    size_t ch_begin,
+    size_t channels_per_ct,
+    size_t H,
+    size_t W,
+    size_t N,
+    uint64_t plain_modulus);
+
+// Build packed multi-channel kernel plaintext for PMult.
+// Uses Cheetah-style index:
+// begin = H*W*(channels_per_ct-1) + W*(KH-1) + (KW-1)
+// coeff = begin - local_ch*H*W - kr*W - kc.
+seal::Plaintext build_conv_kernel_plain_packed(
+    const std::vector<int64_t> &kernel_flat_cin,
+    size_t Cin,
+    size_t ch_begin,
+    size_t channels_per_ct,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    size_t N,
+    uint64_t plain_modulus);
+
+// Cheetah-style PMult conv with packed input channels.
+void conv2d_pmult_accum_multi_in_packed(
+    const std::vector<seal::Ciphertext> &input_cts_packed,
+    const std::vector<int64_t> &kernel_flat_cin,
+    size_t Cin,
+    size_t channels_per_ct,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    uint64_t plain_modulus,
+    const seal::Evaluator &evaluator,
+    seal::Ciphertext &out_ct);
+
+// _mod2k rotate+CMult conv with packed input channels.
+void conv2d_rot_cmult_accum_multi_in_packed_mod2k(
+    const std::vector<seal::Ciphertext> &input_cts_packed,
+    const std::vector<int64_t> &kernel_flat_cin,
+    size_t Cin,
+    size_t channels_per_ct,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    uint64_t log_q,
+    seal::Ciphertext &out_ct);

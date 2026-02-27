@@ -392,3 +392,170 @@ void conv2d_rot_cmult_accum_multi_in_mod2k(
         }
     }
 }
+
+seal::Plaintext encode_image_coeff_plain_packed(
+    const std::vector<std::vector<int64_t>> &images,
+    size_t ch_begin,
+    size_t channels_per_ct,
+    size_t H,
+    size_t W,
+    size_t N,
+    uint64_t plain_modulus)
+{
+    if (channels_per_ct == 0 || H == 0 || W == 0 || N == 0) {
+        throw std::invalid_argument("channels_per_ct/H/W/N must be non-zero");
+    }
+    const size_t one_ch = H * W;
+    if (channels_per_ct * one_ch > N) {
+        throw std::invalid_argument("packed channels exceed polynomial size");
+    }
+
+    seal::Plaintext pt;
+    pt.resize(N);
+    for (size_t i = 0; i < N; ++i) pt[i] = 0;
+
+    for (size_t lc = 0; lc < channels_per_ct; ++lc) {
+        const size_t gc = ch_begin + lc;
+        if (gc >= images.size()) break;
+        if (images[gc].size() != one_ch) {
+            throw std::invalid_argument("each channel image size must be H*W");
+        }
+        const size_t base = lc * one_ch;
+        for (size_t i = 0; i < one_ch; ++i) {
+            pt[base + i] = encode_signed_to_plain_coeff(images[gc][i], plain_modulus);
+        }
+    }
+    return pt;
+}
+
+seal::Plaintext build_conv_kernel_plain_packed(
+    const std::vector<int64_t> &kernel_flat_cin,
+    size_t Cin,
+    size_t ch_begin,
+    size_t channels_per_ct,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    size_t N,
+    uint64_t plain_modulus)
+{
+    if (channels_per_ct == 0 || H == 0 || W == 0 || KH == 0 || KW == 0 || N == 0) {
+        throw std::invalid_argument("invalid zero parameter");
+    }
+    if (kernel_flat_cin.size() != Cin * KH * KW) {
+        throw std::invalid_argument("kernel_flat_cin size must be Cin*KH*KW");
+    }
+    const size_t one_ch = H * W;
+    if (channels_per_ct * one_ch > N) {
+        throw std::invalid_argument("packed channels exceed polynomial size");
+    }
+
+    const size_t begin = one_ch * (channels_per_ct - 1) + W * (KH - 1) + (KW - 1);
+    if (begin >= N) throw std::invalid_argument("kernel begin index out of range");
+
+    seal::Plaintext pt;
+    pt.resize(N);
+    for (size_t i = 0; i < N; ++i) pt[i] = 0;
+
+    for (size_t lc = 0; lc < channels_per_ct; ++lc) {
+        const size_t gc = ch_begin + lc;
+        if (gc >= Cin) break; // zero-padded channels
+        const size_t kbase = gc * KH * KW;
+        for (size_t kr = 0; kr < KH; ++kr) {
+            for (size_t kc = 0; kc < KW; ++kc) {
+                const size_t idx = begin - lc * one_ch - kr * W - kc;
+                pt[idx] = encode_signed_to_plain_coeff(kernel_flat_cin[kbase + kr * KW + kc], plain_modulus);
+            }
+        }
+    }
+    return pt;
+}
+
+void conv2d_pmult_accum_multi_in_packed(
+    const std::vector<seal::Ciphertext> &input_cts_packed,
+    const std::vector<int64_t> &kernel_flat_cin,
+    size_t Cin,
+    size_t channels_per_ct,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    uint64_t plain_modulus,
+    const seal::Evaluator &evaluator,
+    seal::Ciphertext &out_ct)
+{
+    if (Cin == 0 || channels_per_ct == 0) throw std::invalid_argument("Cin/channels_per_ct must be non-zero");
+    const size_t n_ct = (Cin + channels_per_ct - 1) / channels_per_ct;
+    if (input_cts_packed.size() != n_ct) throw std::invalid_argument("input_cts_packed size mismatch");
+
+    bool init = false;
+    for (size_t g = 0; g < n_ct; ++g) {
+        const size_t ch_begin = g * channels_per_ct;
+        const size_t N = input_cts_packed[g].poly_modulus_degree();
+
+        seal::Plaintext kernel_pt = build_conv_kernel_plain_packed(
+            kernel_flat_cin, Cin, ch_begin, channels_per_ct, H, W, KH, KW, N, plain_modulus);
+
+        seal::Ciphertext term = input_cts_packed[g];
+        evaluator.multiply_plain_inplace(term, kernel_pt);
+        if (!init) {
+            out_ct = term;
+            init = true;
+        } else {
+            evaluator.add_inplace(out_ct, term);
+        }
+    }
+}
+
+void conv2d_rot_cmult_accum_multi_in_packed_mod2k(
+    const std::vector<seal::Ciphertext> &input_cts_packed,
+    const std::vector<int64_t> &kernel_flat_cin,
+    size_t Cin,
+    size_t channels_per_ct,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    uint64_t log_q,
+    seal::Ciphertext &out_ct)
+{
+    if (Cin == 0 || channels_per_ct == 0) throw std::invalid_argument("Cin/channels_per_ct must be non-zero");
+    if (kernel_flat_cin.size() != Cin * KH * KW) {
+        throw std::invalid_argument("kernel_flat_cin size must be Cin*KH*KW");
+    }
+    const size_t n_ct = (Cin + channels_per_ct - 1) / channels_per_ct;
+    if (input_cts_packed.size() != n_ct) throw std::invalid_argument("input_cts_packed size mismatch");
+
+    const size_t one_ch = H * W;
+    bool init = false;
+    for (size_t g = 0; g < n_ct; ++g) {
+        const auto &ct = input_cts_packed[g];
+        seal::Ciphertext term = ct;
+        for (size_t comp = 0; comp < term.size(); ++comp) {
+            uint64_t *ptr = term.data(comp);
+            for (size_t i = 0; i < term.poly_modulus_degree(); ++i) ptr[i] = 0;
+        }
+
+        for (size_t lc = 0; lc < channels_per_ct; ++lc) {
+            const size_t gc = g * channels_per_ct + lc;
+            if (gc >= Cin) break;
+            const size_t kbase = gc * KH * KW;
+            for (size_t kr = 0; kr < KH; ++kr) {
+                for (size_t kc = 0; kc < KW; ++kc) {
+                    const int64_t w = kernel_flat_cin[kbase + kr * KW + kc];
+                    if (w == 0) continue;
+                    const int64_t shift = -static_cast<int64_t>(lc * one_ch + kr * W + kc);
+                    rotate_multiply_scalar_add_ct_mod2k(ct, shift, w, log_q, term);
+                }
+            }
+        }
+
+        if (!init) {
+            out_ct = term;
+            init = true;
+        } else {
+            add_ct_inplace_mod2k(out_ct, term, log_q);
+        }
+    }
+}
