@@ -66,3 +66,12 @@ void conv2d_rot_cmult_accum_mod2k(
 // Valid output coefficient indices for conv2d_rot_cmult_accum_mod2k layout.
 std::vector<size_t> valid_output_indices_rot_cmult_mod2k(
     size_t H, size_t W, size_t KH, size_t KW, size_t N);
+
+// Fused primitive for _mod2k path:
+// acc_ct += Rot(input_ct, shift) * scalar   (all operations mod 2^k).
+void rotate_multiply_scalar_add_ct_mod2k(
+    const seal::Ciphertext &input_ct,
+    int64_t shift,
+    int64_t scalar,
+    uint64_t log_q,
+    seal::Ciphertext &acc_ct);

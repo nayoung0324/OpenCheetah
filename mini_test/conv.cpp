@@ -11,6 +11,27 @@ size_t idx2d(size_t r, size_t c, size_t W)
 {
     return r * W + c;
 }
+
+void rotate_multiply_scalar_add_ct_mod2k_impl(
+    const seal::Ciphertext &input_ct,
+    int64_t shift,
+    uint64_t scalar_mod2k,
+    uint64_t log_q,
+    seal::Ciphertext &acc_ct,
+    std::vector<uint64_t> &rotated)
+{
+    const size_t n = input_ct.poly_modulus_degree();
+    const uint64_t mask = (1ULL << log_q) - 1ULL;
+    for (size_t comp = 0; comp < input_ct.size(); ++comp) {
+        const uint64_t *in = input_ct.data(comp);
+        uint64_t *out = acc_ct.data(comp);
+        rotate_poly_coeff_mod2k(in, rotated.data(), n, shift, log_q);
+        for (size_t i = 0; i < n; ++i) {
+            const auto prod = static_cast<unsigned __int128>(rotated[i]) * scalar_mod2k;
+            out[i] = (out[i] + (static_cast<uint64_t>(prod) & mask)) & mask;
+        }
+    }
+}
 } // namespace
 
 uint64_t encode_signed_to_plain_coeff(int64_t v, uint64_t plain_modulus)
@@ -210,7 +231,6 @@ void conv2d_rot_cmult_accum_mod2k(
         throw std::invalid_argument("conv2d_rot_cmult_accum_mod2k expects single coeff modulus");
     }
 
-    const uint64_t mask = (1ULL << log_q) - 1ULL;
     const size_t n = input_ct.poly_modulus_degree();
 
     // Allocate destination with the same metadata and zero coefficients.
@@ -221,27 +241,14 @@ void conv2d_rot_cmult_accum_mod2k(
     }
 
     std::vector<uint64_t> rotated(n, 0);
-
     // y = sum_{kr,kc} w[kr,kc] * Rot(input, -(kr*W+kc))
-    // Fused path: rotate from input component into scratch, multiply by scalar, accumulate to out.
     for (size_t kr = 0; kr < KH; ++kr) {
         for (size_t kc = 0; kc < KW; ++kc) {
             const int64_t w = kernel_flat[idx2d(kr, kc, KW)];
             if (w == 0) continue;
-            const uint64_t w_mod2k = static_cast<uint64_t>(w) & mask;
             const int64_t shift = -static_cast<int64_t>(kr * W + kc);
-
-            for (size_t comp = 0; comp < out_ct.size(); ++comp) {
-                const uint64_t *in = input_ct.data(comp);
-                uint64_t *out = out_ct.data(comp);
-
-                rotate_poly_coeff_mod2k(in, rotated.data(), n, shift, log_q);
-
-                for (size_t i = 0; i < n; ++i) {
-                    const auto prod = static_cast<unsigned __int128>(rotated[i]) * w_mod2k;
-                    out[i] = (out[i] + (static_cast<uint64_t>(prod) & mask)) & mask;
-                }
-            }
+            const uint64_t w_mod2k = static_cast<uint64_t>(w) & ((1ULL << log_q) - 1ULL);
+            rotate_multiply_scalar_add_ct_mod2k_impl(input_ct, shift, w_mod2k, log_q, out_ct, rotated);
         }
     }
 }
@@ -267,4 +274,33 @@ std::vector<size_t> valid_output_indices_rot_cmult_mod2k(
         }
     }
     return out;
+}
+
+void rotate_multiply_scalar_add_ct_mod2k(
+    const seal::Ciphertext &input_ct,
+    int64_t shift,
+    int64_t scalar,
+    uint64_t log_q,
+    seal::Ciphertext &acc_ct)
+{
+    if (input_ct.size() == 0 || acc_ct.size() == 0) {
+        throw std::invalid_argument("ciphertext must have at least one component");
+    }
+    if (input_ct.size() != acc_ct.size()) {
+        throw std::invalid_argument("ciphertext size mismatch");
+    }
+    if (input_ct.poly_modulus_degree() != acc_ct.poly_modulus_degree()) {
+        throw std::invalid_argument("poly_modulus_degree mismatch");
+    }
+    if (input_ct.coeff_modulus_size() != 1 || acc_ct.coeff_modulus_size() != 1) {
+        throw std::invalid_argument("rotate_multiply_scalar_add_ct_mod2k expects single coeff modulus");
+    }
+    if (log_q == 0 || log_q > 62) {
+        throw std::invalid_argument("log_q must be in [1,62]");
+    }
+
+    const uint64_t mask = (1ULL << log_q) - 1ULL;
+    const uint64_t a = static_cast<uint64_t>(scalar) & mask;
+    std::vector<uint64_t> rotated(input_ct.poly_modulus_degree(), 0);
+    rotate_multiply_scalar_add_ct_mod2k_impl(input_ct, shift, a, log_q, acc_ct, rotated);
 }
