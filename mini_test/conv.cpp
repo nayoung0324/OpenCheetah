@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <stdexcept>
 
+#include "util.h"
+
 namespace
 {
 size_t idx2d(size_t r, size_t c, size_t W)
@@ -180,4 +182,79 @@ void extract_valid_coeffs_inplace(
             ptr += N;
         }
     }
+}
+
+void conv2d_rot_cmult_accum_mod2k(
+    const seal::Ciphertext &input_ct,
+    const std::vector<int64_t> &kernel_flat,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    uint64_t log_q,
+    seal::Ciphertext &out_ct)
+{
+    if (H == 0 || W == 0 || KH == 0 || KW == 0) {
+        throw std::invalid_argument("H/W/KH/KW must be non-zero");
+    }
+    if (kernel_flat.size() != KH * KW) {
+        throw std::invalid_argument("kernel_flat size must be KH*KW");
+    }
+    if (input_ct.poly_modulus_degree() < H * W) {
+        throw std::invalid_argument("input ciphertext poly degree is smaller than H*W");
+    }
+    if (KH > H || KW > W) {
+        throw std::invalid_argument("KH/KW must be <= H/W");
+    }
+
+    const uint64_t mask = (1ULL << log_q) - 1ULL;
+    bool out_initialized = false;
+
+    // y = sum_{kr,kc} w[kr,kc] * Rot(input, -(kr*W+kc))
+    for (size_t kr = 0; kr < KH; ++kr) {
+        for (size_t kc = 0; kc < KW; ++kc) {
+            const int64_t w = kernel_flat[idx2d(kr, kc, KW)];
+            if (w == 0) continue;
+
+            seal::Ciphertext term = input_ct;
+            const int64_t shift = -static_cast<int64_t>(kr * W + kc);
+            rotate_ct_coeff_inplace_mod2k(term, shift, log_q);
+            mul_const_ct_inplace_mod2k(term, static_cast<uint64_t>(w) & mask, log_q);
+
+            if (!out_initialized) {
+                out_ct = term;
+                out_initialized = true;
+            } else {
+                add_ct_inplace_mod2k(out_ct, term, log_q);
+            }
+        }
+    }
+
+    if (!out_initialized) {
+        out_ct = input_ct;
+        mul_const_ct_inplace_mod2k(out_ct, 0, log_q);
+    }
+}
+
+std::vector<size_t> valid_output_indices_rot_cmult_mod2k(
+    size_t H, size_t W, size_t KH, size_t KW, size_t N)
+{
+    if (H == 0 || W == 0 || KH == 0 || KW == 0 || N == 0) {
+        throw std::invalid_argument("H/W/KH/KW/N must be non-zero");
+    }
+    if (KH > H || KW > W) {
+        throw std::invalid_argument("KH/KW must be <= H/W");
+    }
+    if (H * W > N) {
+        throw std::invalid_argument("H*W must be <= N");
+    }
+
+    std::vector<size_t> out;
+    out.reserve((H - KH + 1) * (W - KW + 1));
+    for (size_t r = 0; r + KH <= H; ++r) {
+        for (size_t c = 0; c + KW <= W; ++c) {
+            out.push_back(r * W + c);
+        }
+    }
+    return out;
 }

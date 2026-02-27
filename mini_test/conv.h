@@ -49,3 +49,20 @@ seal::Plaintext build_extract_mask_plain(
 // If ciphertext is in NTT form, transform back before zeroing coefficients.
 void extract_valid_coeffs_inplace(
     seal::Ciphertext &ct, const seal::Evaluator &evaluator, const std::vector<size_t> &valid_indices);
+
+// _mod2k convolution (single-channel) without PMult:
+// For each kernel coefficient w[r,c], rotate input by -(r*W+c), multiply by scalar w[r,c], and accumulate.
+// Output valid region is placed at indices r*W + c for 0<=r<=H-KH, 0<=c<=W-KW.
+void conv2d_rot_cmult_accum_mod2k(
+    const seal::Ciphertext &input_ct,
+    const std::vector<int64_t> &kernel_flat,
+    size_t H,
+    size_t W,
+    size_t KH,
+    size_t KW,
+    uint64_t log_q,
+    seal::Ciphertext &out_ct);
+
+// Valid output coefficient indices for conv2d_rot_cmult_accum_mod2k layout.
+std::vector<size_t> valid_output_indices_rot_cmult_mod2k(
+    size_t H, size_t W, size_t KH, size_t KW, size_t N);
