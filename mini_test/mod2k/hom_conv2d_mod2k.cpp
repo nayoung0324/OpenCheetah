@@ -353,7 +353,8 @@ void run_conv_layer_mod2k(
 {
 #if MOD2K_WRAPPER_BENCH
     long long us_pad = 0;
-    long long us_prepare = 0;
+    long long us_prepare_tile_patch = 0;
+    long long us_encode_encrypt = 0;
     long long us_core_conv = 0;
     long long us_remove_unused = 0;
     long long us_decrypt_decode = 0;
@@ -422,17 +423,24 @@ void run_conv_layer_mod2k(
     std::vector<TilePrepared> prepared_tiles;
 
     const size_t one_ch = Hp * Wp;
-#if MOD2K_WRAPPER_BENCH
-    const auto t_prep0 = BenchClock::now();
-#endif
     if (one_ch <= meta.poly_degree) {
+#if MOD2K_WRAPPER_BENCH
+        const auto t_tp0 = BenchClock::now();
+#endif
         TilePrepared tp;
         tp.tile = { 0, 0, out_h, out_w, Hp, Wp };
         tp.tile_in_h = Hp;
         tp.tile_in_w = Wp;
         tp.valid_indices = valid_output_indices_rot_cmult_mod2k(Hp, Wp, meta.kernel_h, meta.kernel_w, meta.poly_degree);
+#if MOD2K_WRAPPER_BENCH
+        const auto t_tp1 = BenchClock::now();
+        us_prepare_tile_patch += std::chrono::duration_cast<std::chrono::microseconds>(t_tp1 - t_tp0).count();
+#endif
         tp.image_cts.resize(Cin);
         for (size_t ci = 0; ci < Cin; ++ci) {
+#if MOD2K_WRAPPER_BENCH
+            const auto t_enc0 = BenchClock::now();
+#endif
             std::vector<uint64_t> coeffs(meta.poly_degree, 0);
             for (size_t i = 0; i < one_ch; ++i) {
                 coeffs[i] = static_cast<uint64_t>(images_padded[ci][i]) & mask;
@@ -441,11 +449,25 @@ void run_conv_layer_mod2k(
             seal::Plaintext pt = to_plaintext(coeffs, meta.poly_degree, static_cast<int>(meta.log_q));
             encrypt_zero_nttfree(context, tp.image_cts[ci], sk_pt, meta.log_q);
             add_plain_to_ct_inplace_mod2k(tp.image_cts[ci], pt, meta.log_q);
+#if MOD2K_WRAPPER_BENCH
+            const auto t_enc1 = BenchClock::now();
+            us_encode_encrypt += std::chrono::duration_cast<std::chrono::microseconds>(t_enc1 - t_enc0).count();
+#endif
         }
         prepared_tiles.push_back(std::move(tp));
     } else {
+#if MOD2K_WRAPPER_BENCH
+        const auto t_tiles0 = BenchClock::now();
+#endif
         const auto tiles = make_conv2d_tiles_valid(Hp, Wp, meta.kernel_h, meta.kernel_w, meta.poly_degree);
+#if MOD2K_WRAPPER_BENCH
+        const auto t_tiles1 = BenchClock::now();
+        us_prepare_tile_patch += std::chrono::duration_cast<std::chrono::microseconds>(t_tiles1 - t_tiles0).count();
+#endif
         for (const auto &tile : tiles) {
+#if MOD2K_WRAPPER_BENCH
+            const auto t_tp0 = BenchClock::now();
+#endif
             TilePrepared tp;
             tp.tile = tile;
             tp.tile_in_h = tile.in_h;
@@ -453,9 +475,22 @@ void run_conv_layer_mod2k(
             tp.valid_indices = valid_output_indices_rot_cmult_mod2k(
                 tile.in_h, tile.in_w, meta.kernel_h, meta.kernel_w, meta.poly_degree);
             tp.image_cts.resize(Cin);
+#if MOD2K_WRAPPER_BENCH
+            const auto t_tp1 = BenchClock::now();
+            us_prepare_tile_patch += std::chrono::duration_cast<std::chrono::microseconds>(t_tp1 - t_tp0).count();
+#endif
 
             for (size_t ci = 0; ci < Cin; ++ci) {
+#if MOD2K_WRAPPER_BENCH
+                const auto t_patch0 = BenchClock::now();
+#endif
                 const auto patch = extract_input_patch_by_tile(images_padded[ci], Hp, Wp, tile);
+#if MOD2K_WRAPPER_BENCH
+                const auto t_patch1 = BenchClock::now();
+                us_prepare_tile_patch += std::chrono::duration_cast<std::chrono::microseconds>(t_patch1 - t_patch0).count();
+
+                const auto t_enc0 = BenchClock::now();
+#endif
                 std::vector<uint64_t> coeffs(meta.poly_degree, 0);
                 for (size_t i = 0; i < patch.size(); ++i) {
                     coeffs[i] = static_cast<uint64_t>(patch[i]) & mask;
@@ -464,15 +499,14 @@ void run_conv_layer_mod2k(
                 seal::Plaintext pt = to_plaintext(coeffs, meta.poly_degree, static_cast<int>(meta.log_q));
                 encrypt_zero_nttfree(context, tp.image_cts[ci], sk_pt, meta.log_q);
                 add_plain_to_ct_inplace_mod2k(tp.image_cts[ci], pt, meta.log_q);
+#if MOD2K_WRAPPER_BENCH
+                const auto t_enc1 = BenchClock::now();
+                us_encode_encrypt += std::chrono::duration_cast<std::chrono::microseconds>(t_enc1 - t_enc0).count();
+#endif
             }
             prepared_tiles.push_back(std::move(tp));
         }
     }
-#if MOD2K_WRAPPER_BENCH
-    const auto t_prep1 = BenchClock::now();
-    us_prepare += std::chrono::duration_cast<std::chrono::microseconds>(t_prep1 - t_prep0).count();
-#endif
-
     for (const auto &tp : prepared_tiles) {
         std::vector<seal::Ciphertext> out_cts;
 #if MOD2K_WRAPPER_BENCH
@@ -534,7 +568,8 @@ void run_conv_layer_mod2k(
     const uint64_t zero_unused_calls_delta = g_zero_unused_calls - zero_unused_calls_before;
     std::cout << "[mod2k wrapper bench] "
               << "pad_us=" << us_pad
-              << ", prep_us=" << us_prepare
+              << ", prep_tile_patch_us=" << us_prepare_tile_patch
+              << ", encode_encrypt_us=" << us_encode_encrypt
               << ", core_conv_us=" << us_core_conv
               << ", remove_unused_us=" << us_remove_unused
               << ", decrypt_decode_us=" << us_decrypt_decode
