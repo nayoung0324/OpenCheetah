@@ -13,6 +13,36 @@ size_t idx2d(size_t r, size_t c, size_t W)
     return r * W + c;
 }
 
+void validate_used_indices(const std::vector<size_t> &used_indices, size_t N)
+{
+    if (used_indices.empty() || used_indices.size() > N) {
+        throw std::invalid_argument("invalid used_indices");
+    }
+    if (std::any_of(used_indices.begin(), used_indices.end(), [N](size_t c) { return c >= N; })) {
+        throw std::invalid_argument("used index out of range");
+    }
+}
+
+void zero_unused_in_c0_rns(seal::Ciphertext &ct, const std::vector<size_t> &used_indices)
+{
+    const size_t N = ct.poly_modulus_degree();
+    const size_t L = ct.coeff_modulus_size();
+    std::vector<size_t> keep = used_indices;
+    std::sort(keep.begin(), keep.end());
+    keep.erase(std::unique(keep.begin(), keep.end()), keep.end());
+
+    // Zero only c0 as in Cheetah's remove_unused_coeffs.
+    uint64_t *c0_rns = ct.data(0);
+    for (size_t idx = 0; idx < N; ++idx) {
+        if (std::binary_search(keep.begin(), keep.end(), idx)) continue;
+        uint64_t *ptr = c0_rns + idx;
+        for (size_t l = 0; l < L; ++l) {
+            *ptr = 0;
+            ptr += N;
+        }
+    }
+}
+
 // Internal fused primitive: rotate one ciphertext, multiply by scalar, and accumulate.
 void rotate_multiply_scalar_add_ct_mod2k_impl(
     const seal::Ciphertext &input_ct,
@@ -185,35 +215,53 @@ seal::Plaintext build_extract_mask_plain(
 void extract_valid_coeffs_inplace(
     seal::Ciphertext &ct, const seal::Evaluator &evaluator, const std::vector<size_t> &valid_indices)
 {
+    remove_unused_coeffs_cheetah_inplace(ct, evaluator, valid_indices);
+}
+
+// Cheetah-style remove-unused: zero out unused coefficients in c0 only.
+void remove_unused_coeffs_cheetah_inplace(
+    seal::Ciphertext &ct, const seal::Evaluator &evaluator, const std::vector<size_t> &used_indices)
+{
     if (ct.size() == 0) return;
     const size_t N = ct.poly_modulus_degree();
-    const size_t L = ct.coeff_modulus_size();
-
-    if (valid_indices.empty() || valid_indices.size() > N) {
-        throw std::invalid_argument("invalid valid_indices");
-    }
-    if (std::any_of(valid_indices.begin(), valid_indices.end(), [N](size_t c) { return c >= N; })) {
-        throw std::invalid_argument("valid index out of range");
-    }
+    validate_used_indices(used_indices, N);
 
     if (ct.is_ntt_form()) {
         evaluator.transform_from_ntt_inplace(ct);
     }
+    zero_unused_in_c0_rns(ct, used_indices);
+}
 
-    std::vector<size_t> keep = valid_indices;
-    std::sort(keep.begin(), keep.end());
-    keep.erase(std::unique(keep.begin(), keep.end()), keep.end());
+// _mod2k remove-unused: zero out unused coefficients in c0 only.
+void remove_unused_coeffs_mod2k_inplace(seal::Ciphertext &ct, const std::vector<size_t> &used_indices)
+{
+    if (ct.size() == 0) return;
+    const size_t N = ct.poly_modulus_degree();
+    validate_used_indices(used_indices, N);
 
-    // Cheetah-style extract: zero-out only c0 coefficients.
-    uint64_t *c0_rns = ct.data(0);
-    for (size_t idx = 0; idx < N; ++idx) {
-        if (std::binary_search(keep.begin(), keep.end(), idx)) continue;
-        uint64_t *ptr = c0_rns + idx;
-        for (size_t l = 0; l < L; ++l) {
-            *ptr = 0;
-            ptr += N;
-        }
+    if (ct.is_ntt_form()) {
+        throw std::invalid_argument("remove_unused_coeffs_mod2k_inplace expects coefficient-form ciphertext");
     }
+    zero_unused_in_c0_rns(ct, used_indices);
+}
+
+// NOTE:
+// Arbitrary index compaction on ciphertext coefficients is not a valid HE operation
+// unless implemented via proper automorphisms/keyswitching pipeline.
+// Use compact_coeffs_to_prefix on decoded coefficients instead.
+void compact_valid_coeffs_inplace(seal::Ciphertext &, const std::vector<size_t> &)
+{
+    throw std::logic_error(
+        "compact_valid_coeffs_inplace is unsupported on ciphertext; compact after decryption");
+}
+
+// NOTE:
+// Same limitation as above. Evaluator is accepted for API symmetry.
+void compact_valid_coeffs_inplace(
+    seal::Ciphertext &, const seal::Evaluator &, const std::vector<size_t> &)
+{
+    throw std::logic_error(
+        "compact_valid_coeffs_inplace is unsupported on ciphertext; compact after decryption");
 }
 
 // _mod2k single-channel conv by rotate + scalar multiply + accumulate.
@@ -762,4 +810,28 @@ void scatter_output_patch_by_tile(
             full_out[(tile.out_row + r) * out_W + (tile.out_col + c)] = patch_out[r * tile.out_w + c];
         }
     }
+}
+
+// Compact selected coefficients into prefix order for next-stage consumption.
+std::vector<int64_t> compact_coeffs_to_prefix(
+    const std::vector<int64_t> &coeffs,
+    const std::vector<size_t> &valid_indices,
+    size_t out_size)
+{
+    if (out_size == 0) {
+        throw std::invalid_argument("out_size must be non-zero");
+    }
+    if (valid_indices.size() > out_size) {
+        throw std::invalid_argument("valid_indices size must be <= out_size");
+    }
+
+    std::vector<int64_t> out(out_size, 0);
+    for (size_t i = 0; i < valid_indices.size(); ++i) {
+        const size_t src = valid_indices[i];
+        if (src >= coeffs.size()) {
+            throw std::out_of_range("valid index out of range");
+        }
+        out[i] = coeffs[src];
+    }
+    return out;
 }

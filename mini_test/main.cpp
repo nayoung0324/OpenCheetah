@@ -1,5 +1,6 @@
 #include <seal/seal.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
@@ -159,7 +160,7 @@ int main()
             }
         }
 
-        struct TilePrepared
+        struct TilePreparedCheetah
         {
             Conv2DTile tile;
             size_t tile_in_h;
@@ -168,70 +169,89 @@ int main()
             size_t out_base_packed;
             std::vector<size_t> valid_indices_pmult;
             std::vector<Ciphertext> image_cts_seal_packed;
+        };
+        struct TilePreparedMod2k
+        {
+            Conv2DTile tile;
+            size_t tile_in_h;
+            size_t tile_in_w;
+            std::vector<size_t> valid_indices_mod2k;
             std::vector<Ciphertext> image_cts_mod2k;
         };
 
-        std::vector<TilePrepared> prepared_tiles;
+        std::vector<TilePreparedCheetah> prepared_tiles_cheetah;
+        std::vector<TilePreparedMod2k> prepared_tiles_mod2k;
         if (one_ch <= N) {
-            TilePrepared tp;
-            tp.tile = { 0, 0, out_h, out_w, Hp, Wp };
-            tp.tile_in_h = Hp;
-            tp.tile_in_w = Wp;
-            tp.channels_per_ct = N / one_ch;
-            tp.out_base_packed = one_ch * (tp.channels_per_ct - 1) + Wp * (KH - 1) + (KW - 1);
+            TilePreparedCheetah tc;
+            TilePreparedMod2k tm;
+            tc.tile = { 0, 0, out_h, out_w, Hp, Wp };
+            tm.tile = tc.tile;
+            tc.tile_in_h = Hp;
+            tc.tile_in_w = Wp;
+            tm.tile_in_h = Hp;
+            tm.tile_in_w = Wp;
+            tm.valid_indices_mod2k = valid_output_indices_rot_cmult_mod2k(Hp, Wp, KH, KW, N);
+            tc.channels_per_ct = N / one_ch;
+            tc.out_base_packed = one_ch * (tc.channels_per_ct - 1) + Wp * (KH - 1) + (KW - 1);
 
-            const size_t n_packed_ct = (Cin + tp.channels_per_ct - 1) / tp.channels_per_ct;
-            tp.image_cts_seal_packed.resize(n_packed_ct);
+            const size_t n_packed_ct = (Cin + tc.channels_per_ct - 1) / tc.channels_per_ct;
+            tc.image_cts_seal_packed.resize(n_packed_ct);
             for (size_t g = 0; g < n_packed_ct; ++g) {
-                const size_t ch_begin = g * tp.channels_per_ct;
+                const size_t ch_begin = g * tc.channels_per_ct;
                 Plaintext image_pt_packed = encode_image_coeff_plain_packed(
-                    images_padded, ch_begin, tp.channels_per_ct, Hp, Wp, N, plain_mod_cheetah);
-                encryptor_cheetah.encrypt(image_pt_packed, tp.image_cts_seal_packed[g]);
+                    images_padded, ch_begin, tc.channels_per_ct, Hp, Wp, N, plain_mod_cheetah);
+                encryptor_cheetah.encrypt(image_pt_packed, tc.image_cts_seal_packed[g]);
             }
 
-            tp.image_cts_mod2k.resize(Cin);
+            tm.image_cts_mod2k.resize(Cin);
             for (size_t ci = 0; ci < Cin; ++ci) {
                 std::vector<uint64_t> image_mod2k(N, 0);
                 for (size_t i = 0; i < one_ch; ++i) image_mod2k[i] = static_cast<uint64_t>(images_padded[ci][i]) & mask_mod2k;
                 scale_by_pow2_inplace(image_mod2k, delta_shift_mod2k, static_cast<int>(log_q_mod2k));
                 Plaintext image_pt_mod2k = vector_to_plaintext_coeff(image_mod2k, N, static_cast<int>(log_q_mod2k));
-                encrypt_zero_nttfree(context_mod2k, tp.image_cts_mod2k[ci], sk_pt_mod2k, log_q_mod2k);
-                add_plain_to_ct_inplace_mod2k(tp.image_cts_mod2k[ci], image_pt_mod2k, log_q_mod2k);
+                encrypt_zero_nttfree(context_mod2k, tm.image_cts_mod2k[ci], sk_pt_mod2k, log_q_mod2k);
+                add_plain_to_ct_inplace_mod2k(tm.image_cts_mod2k[ci], image_pt_mod2k, log_q_mod2k);
             }
 
-            tp.valid_indices_pmult.reserve(H * W);
+            tc.valid_indices_pmult.reserve(H * W);
             for (size_t r = 0; r < H; ++r) {
                 for (size_t c = 0; c < W; ++c) {
-                    tp.valid_indices_pmult.push_back(tp.out_base_packed + r * Wp + c);
+                    tc.valid_indices_pmult.push_back(tc.out_base_packed + r * Wp + c);
                 }
             }
-            prepared_tiles.push_back(std::move(tp));
+            prepared_tiles_cheetah.push_back(std::move(tc));
+            prepared_tiles_mod2k.push_back(std::move(tm));
         } else {
             const auto tiles = make_conv2d_tiles_valid(Hp, Wp, KH, KW, N);
             for (const auto &tile : tiles) {
-                TilePrepared tp;
-                tp.tile = tile;
-                tp.tile_in_h = tile.in_h;
-                tp.tile_in_w = tile.in_w;
+                TilePreparedCheetah tc;
+                TilePreparedMod2k tm;
+                tc.tile = tile;
+                tm.tile = tile;
+                tc.tile_in_h = tile.in_h;
+                tc.tile_in_w = tile.in_w;
+                tm.tile_in_h = tile.in_h;
+                tm.tile_in_w = tile.in_w;
+                tm.valid_indices_mod2k = valid_output_indices_rot_cmult_mod2k(tile.in_h, tile.in_w, KH, KW, N);
                 const size_t tile_one_ch = tile.in_h * tile.in_w;
-                tp.channels_per_ct = N / tile_one_ch;
-                tp.out_base_packed = tile_one_ch * (tp.channels_per_ct - 1) + tile.in_w * (KH - 1) + (KW - 1);
+                tc.channels_per_ct = N / tile_one_ch;
+                tc.out_base_packed = tile_one_ch * (tc.channels_per_ct - 1) + tile.in_w * (KH - 1) + (KW - 1);
 
                 std::vector<std::vector<int64_t>> tile_images(Cin, std::vector<int64_t>(tile_one_ch, 0));
                 for (size_t ci = 0; ci < Cin; ++ci) {
                     tile_images[ci] = extract_input_patch_by_tile(images_padded[ci], Hp, Wp, tile);
                 }
 
-                const size_t n_packed_ct = (Cin + tp.channels_per_ct - 1) / tp.channels_per_ct;
-                tp.image_cts_seal_packed.resize(n_packed_ct);
+                const size_t n_packed_ct = (Cin + tc.channels_per_ct - 1) / tc.channels_per_ct;
+                tc.image_cts_seal_packed.resize(n_packed_ct);
                 for (size_t g = 0; g < n_packed_ct; ++g) {
-                    const size_t ch_begin = g * tp.channels_per_ct;
+                    const size_t ch_begin = g * tc.channels_per_ct;
                     Plaintext image_pt_packed = encode_image_coeff_plain_packed(
-                        tile_images, ch_begin, tp.channels_per_ct, tile.in_h, tile.in_w, N, plain_mod_cheetah);
-                    encryptor_cheetah.encrypt(image_pt_packed, tp.image_cts_seal_packed[g]);
+                        tile_images, ch_begin, tc.channels_per_ct, tile.in_h, tile.in_w, N, plain_mod_cheetah);
+                    encryptor_cheetah.encrypt(image_pt_packed, tc.image_cts_seal_packed[g]);
                 }
 
-                tp.image_cts_mod2k.resize(Cin);
+                tm.image_cts_mod2k.resize(Cin);
                 for (size_t ci = 0; ci < Cin; ++ci) {
                     std::vector<uint64_t> image_mod2k(N, 0);
                     for (size_t i = 0; i < tile_one_ch; ++i) {
@@ -239,70 +259,79 @@ int main()
                     }
                     scale_by_pow2_inplace(image_mod2k, delta_shift_mod2k, static_cast<int>(log_q_mod2k));
                     Plaintext image_pt_mod2k = vector_to_plaintext_coeff(image_mod2k, N, static_cast<int>(log_q_mod2k));
-                    encrypt_zero_nttfree(context_mod2k, tp.image_cts_mod2k[ci], sk_pt_mod2k, log_q_mod2k);
-                    add_plain_to_ct_inplace_mod2k(tp.image_cts_mod2k[ci], image_pt_mod2k, log_q_mod2k);
+                    encrypt_zero_nttfree(context_mod2k, tm.image_cts_mod2k[ci], sk_pt_mod2k, log_q_mod2k);
+                    add_plain_to_ct_inplace_mod2k(tm.image_cts_mod2k[ci], image_pt_mod2k, log_q_mod2k);
                 }
 
-                tp.valid_indices_pmult.reserve(tile.out_h * tile.out_w);
+                tc.valid_indices_pmult.reserve(tile.out_h * tile.out_w);
                 for (size_t r = 0; r < tile.out_h; ++r) {
                     for (size_t c = 0; c < tile.out_w; ++c) {
-                        tp.valid_indices_pmult.push_back(tp.out_base_packed + r * tile.in_w + c);
+                        tc.valid_indices_pmult.push_back(tc.out_base_packed + r * tile.in_w + c);
                     }
                 }
-                prepared_tiles.push_back(std::move(tp));
+                prepared_tiles_cheetah.push_back(std::move(tc));
+                prepared_tiles_mod2k.push_back(std::move(tm));
             }
+        }
+        if (prepared_tiles_cheetah.size() != prepared_tiles_mod2k.size()) {
+            throw std::logic_error("tile preparation mismatch between cheetah and mod2k paths");
         }
 
         // Correctness check (single run): assemble tile outputs and compare with reference.
         std::vector<std::vector<int64_t>> got_pmult(Co, std::vector<int64_t>(out_h * out_w, 0));
         std::vector<std::vector<int64_t>> got_mod2k(Co, std::vector<int64_t>(out_h * out_w, 0));
 
-        for (const auto &tp : prepared_tiles) {
+        for (size_t ti = 0; ti < prepared_tiles_cheetah.size(); ++ti) {
+            const auto &tc = prepared_tiles_cheetah[ti];
+            const auto &tm = prepared_tiles_mod2k[ti];
             std::vector<Ciphertext> outs_pmult;
             conv2d_pmult_multi_out_packed(
-                tp.image_cts_seal_packed,
+                tc.image_cts_seal_packed,
                 kernels_flat_co_cin,
                 Co,
                 Cin,
-                tp.channels_per_ct,
-                tp.tile_in_h,
-                tp.tile_in_w,
+                tc.channels_per_ct,
+                tc.tile_in_h,
+                tc.tile_in_w,
                 KH,
                 KW,
                 plain_mod_cheetah,
                 evaluator_cheetah,
                 outs_pmult);
             for (size_t co = 0; co < Co; ++co) {
-                extract_valid_coeffs_inplace(outs_pmult[co], evaluator_cheetah, tp.valid_indices_pmult);
+                extract_valid_coeffs_inplace(outs_pmult[co], evaluator_cheetah, tc.valid_indices_pmult);
                 Plaintext pt;
                 decryptor_cheetah.decrypt(outs_pmult[co], pt);
-                std::vector<int64_t> patch(tp.tile.out_h * tp.tile.out_w, 0);
-                for (size_t r = 0; r < tp.tile.out_h; ++r) {
-                    for (size_t c = 0; c < tp.tile.out_w; ++c) {
-                        const size_t idx = tp.out_base_packed + r * tp.tile_in_w + c;
-                        const uint64_t coeff = (idx < pt.coeff_count()) ? pt[idx] : 0ULL;
-                        patch[r * tp.tile.out_w + c] = decode_plain_coeff_to_signed(coeff, plain_mod_cheetah);
-                    }
+                std::vector<int64_t> decoded_full(N, 0);
+                const size_t coeff_count = std::min(N, pt.coeff_count());
+                for (size_t i = 0; i < coeff_count; ++i) {
+                    decoded_full[i] = decode_plain_coeff_to_signed(pt[i], plain_mod_cheetah);
                 }
-                scatter_output_patch_by_tile(patch, tp.tile, out_w, got_pmult[co]);
+                const std::vector<int64_t> compact =
+                    compact_coeffs_to_prefix(decoded_full, tc.valid_indices_pmult, N);
+                std::vector<int64_t> patch(tc.tile.out_h * tc.tile.out_w, 0);
+                for (size_t i = 0; i < patch.size(); ++i) {
+                    patch[i] = compact[i];
+                }
+                scatter_output_patch_by_tile(patch, tc.tile, out_w, got_pmult[co]);
             }
 
             std::vector<Ciphertext> outs_mod2k;
             conv2d_rot_cmult_multi_out_mod2k(
-                tp.image_cts_mod2k, kernels_flat_co_cin, Co, Cin, tp.tile_in_h, tp.tile_in_w, KH, KW, log_q_mod2k, outs_mod2k);
+                tm.image_cts_mod2k, kernels_flat_co_cin, Co, Cin, tm.tile_in_h, tm.tile_in_w, KH, KW, log_q_mod2k, outs_mod2k);
             for (size_t co = 0; co < Co; ++co) {
+                remove_unused_coeffs_mod2k_inplace(outs_mod2k[co], tm.valid_indices_mod2k);
                 Plaintext scaled;
                 decrypt_nttfree(context_mod2k, outs_mod2k[co], sk_pt_mod2k, scaled, log_q_mod2k);
                 std::vector<int64_t> decoded =
                     decode_divide_pow2(scaled, delta_shift_mod2k, static_cast<int>(log_q_mod2k), N);
-                std::vector<int64_t> patch(tp.tile.out_h * tp.tile.out_w, 0);
-                for (size_t r = 0; r < tp.tile.out_h; ++r) {
-                    for (size_t c = 0; c < tp.tile.out_w; ++c) {
-                        const size_t idx = r * tp.tile_in_w + c;
-                        patch[r * tp.tile.out_w + c] = decoded[idx];
-                    }
+                const std::vector<int64_t> compact =
+                    compact_coeffs_to_prefix(decoded, tm.valid_indices_mod2k, N);
+                std::vector<int64_t> patch(tm.tile.out_h * tm.tile.out_w, 0);
+                for (size_t i = 0; i < patch.size(); ++i) {
+                    patch[i] = compact[i];
                 }
-                scatter_output_patch_by_tile(patch, tp.tile, out_w, got_mod2k[co]);
+                scatter_output_patch_by_tile(patch, tm.tile, out_w, got_mod2k[co]);
             }
         }
 
@@ -317,23 +346,23 @@ int main()
 
         const auto t0_pmult = Clock::now();
         for (int i = 0; i < iters; ++i) {
-            for (const auto &tp : prepared_tiles) {
+            for (const auto &tc : prepared_tiles_cheetah) {
                 std::vector<Ciphertext> outs;
                 conv2d_pmult_multi_out_packed(
-                    tp.image_cts_seal_packed,
+                    tc.image_cts_seal_packed,
                     kernels_flat_co_cin,
                     Co,
                     Cin,
-                    tp.channels_per_ct,
-                    tp.tile_in_h,
-                    tp.tile_in_w,
+                    tc.channels_per_ct,
+                    tc.tile_in_h,
+                    tc.tile_in_w,
                     KH,
                     KW,
                     plain_mod_cheetah,
                     evaluator_cheetah,
                     outs);
                 for (size_t co = 0; co < Co; ++co) {
-                    global_checksum ^= outs[co].data(0)[tp.out_base_packed];
+                    global_checksum ^= outs[co].data(0)[tc.out_base_packed];
                 }
             }
         }
@@ -344,10 +373,10 @@ int main()
 
         const auto t0_mod2k = Clock::now();
         for (int i = 0; i < iters; ++i) {
-            for (const auto &tp : prepared_tiles) {
+            for (const auto &tm : prepared_tiles_mod2k) {
                 std::vector<Ciphertext> outs;
                 conv2d_rot_cmult_multi_out_mod2k(
-                    tp.image_cts_mod2k, kernels_flat_co_cin, Co, Cin, tp.tile_in_h, tp.tile_in_w, KH, KW, log_q_mod2k, outs);
+                    tm.image_cts_mod2k, kernels_flat_co_cin, Co, Cin, tm.tile_in_h, tm.tile_in_w, KH, KW, log_q_mod2k, outs);
                 for (size_t co = 0; co < Co; ++co) {
                     global_checksum ^= outs[co].data(0)[0];
                 }
@@ -365,13 +394,13 @@ int main()
             std::cout << "  mode=single-ct-image, channels_per_ct=" << channels_per_ct
                       << ", packed_ct=" << n_packed_ct << ", iters=" << iters << "\n";
         } else {
-            std::cout << "  mode=tiled(H*W>N), tiles=" << prepared_tiles.size() << ", iters=" << iters << "\n";
+            std::cout << "  mode=tiled(H*W>N), tiles=" << prepared_tiles_cheetah.size() << ", iters=" << iters << "\n";
         }
         std::cout << "  padding=zero(SAME), input_padded=" << Hp << "x" << Wp
                   << ", output=" << out_h << "x" << out_w << "\n";
         std::cout << "  cheetah_pmult total_ms=" << pmult_ms << ", avg_ms=" << (pmult_ms / iters) << "\n";
         std::cout << "  mod2k_rot_cmult total_ms=" << mod2k_ms << ", avg_ms=" << (mod2k_ms / iters) << "\n";
-        std::cout << "  correctness: pmult_mismatches=" << pmult_mismatches
+        std::cout << "  correctness(compact output order): pmult_mismatches=" << pmult_mismatches
                   << ", mod2k_mismatches=" << mod2k_mismatches << "\n";
         std::cout << "  speedup(pmult/mod2k)=" << (pmult_ms / mod2k_ms) << "\n\n";
     }

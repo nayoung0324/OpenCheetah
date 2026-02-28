@@ -60,6 +60,20 @@ seal::Plaintext build_extract_mask_plain(
 void extract_valid_coeffs_inplace(
     seal::Ciphertext &ct, const seal::Evaluator &evaluator, const std::vector<size_t> &valid_indices);
 
+// Cheetah-style remove-unused: zero out unused coefficients in c0 only.
+// Do NOT modify c1: touching c1 changes all decrypted coefficients via c1*s.
+void remove_unused_coeffs_cheetah_inplace(
+    seal::Ciphertext &ct, const seal::Evaluator &evaluator, const std::vector<size_t> &used_indices);
+
+// _mod2k version of remove-unused: also zero out unused coefficients in c0 only.
+void remove_unused_coeffs_mod2k_inplace(seal::Ciphertext &ct, const std::vector<size_t> &used_indices);
+
+// Compact valid coefficients to the prefix [0..valid_count-1] in the given order.
+// All ciphertext components are permuted identically and the suffix is zeroed.
+void compact_valid_coeffs_inplace(seal::Ciphertext &ct, const std::vector<size_t> &valid_indices);
+void compact_valid_coeffs_inplace(
+    seal::Ciphertext &ct, const seal::Evaluator &evaluator, const std::vector<size_t> &valid_indices);
+
 // _mod2k convolution (single-channel) without PMult:
 // For each kernel coefficient w[r,c], rotate input by -(r*W+c), multiply by scalar w[r,c], and accumulate.
 // Output valid region is placed at indices r*W + c for 0<=r<=H-KH, 0<=c<=W-KW.
@@ -211,3 +225,10 @@ void scatter_output_patch_by_tile(
     const Conv2DTile &tile,
     size_t out_W,
     std::vector<int64_t> &full_out);
+
+// Compact selected coefficients to prefix order:
+// out[0] = coeffs[valid_indices[0]], ..., out[m-1] = coeffs[valid_indices[m-1]], rest zero.
+std::vector<int64_t> compact_coeffs_to_prefix(
+    const std::vector<int64_t> &coeffs,
+    const std::vector<size_t> &valid_indices,
+    size_t out_size);
