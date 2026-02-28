@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <vector>
 
-#include "util.h"
+#include "common/util.h"
 #include "seal/util/polycore.h"
 #include "seal/util/rlwe.h"
 

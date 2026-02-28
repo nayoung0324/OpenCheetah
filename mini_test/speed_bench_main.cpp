@@ -6,8 +6,8 @@
 #include <random>
 #include <vector>
 
-#include "encryption.h"
-#include "util.h"
+#include "mod2k/encryption.h"
+#include "common/util.h"
 
 using namespace seal;
 using Clock = std::chrono::high_resolution_clock;
@@ -158,4 +158,3 @@ int main()
 
     return 0;
 }
-

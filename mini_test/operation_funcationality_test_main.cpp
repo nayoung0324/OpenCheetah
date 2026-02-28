@@ -7,9 +7,9 @@
 #include <stdexcept>
 #include <vector>
 
-#include "decryption.h"
-#include "encryption.h"
-#include "util.h"
+#include "mod2k/decryption.h"
+#include "mod2k/encryption.h"
+#include "common/util.h"
 
 using namespace seal;
 

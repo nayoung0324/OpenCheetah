@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <vector>
 
-#include "util.h"
+#include "common/util.h"
 
 using namespace seal;
 

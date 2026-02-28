@@ -11,25 +11,28 @@ find_package(SEAL 3.7 REQUIRED)
 
 add_executable(mini_seal
   main.cpp
-  conv.cpp
-  util.cpp
-  encryption.cpp
-  decryption.cpp
+  common/conv.cpp
+  common/util.cpp
+  mod2k/encryption.cpp
+  mod2k/decryption.cpp
 )
 target_link_libraries(mini_seal PRIVATE SEAL::seal)
+target_include_directories(mini_seal PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(mini_seal_compare
   compare_with_seal_main.cpp
-  util.cpp
-  encryption.cpp
-  decryption.cpp
+  common/util.cpp
+  mod2k/encryption.cpp
+  mod2k/decryption.cpp
 )
 target_link_libraries(mini_seal_compare PRIVATE SEAL::seal)
+target_include_directories(mini_seal_compare PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(mini_seal_functionality
   operation_funcationality_test_main.cpp
-  util.cpp
-  encryption.cpp
-  decryption.cpp
+  common/util.cpp
+  mod2k/encryption.cpp
+  mod2k/decryption.cpp
 )
 target_link_libraries(mini_seal_functionality PRIVATE SEAL::seal)
+target_include_directories(mini_seal_functionality PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

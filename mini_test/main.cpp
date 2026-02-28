@@ -7,10 +7,14 @@
 #include <random>
 #include <vector>
 
-#include "conv.h"
-#include "decryption.h"
-#include "encryption.h"
-#include "util.h"
+#include "common/conv.h"
+#include "mod2k/decryption.h"
+#include "mod2k/encryption.h"
+#include "cheetah/conv_cheetah.h"
+#include "cheetah/encoding_cheetah.h"
+#include "mod2k/conv_mod2k.h"
+#include "mod2k/encoding_mod2k.h"
+#include "common/util.h"
 
 using namespace seal;
 using Clock = std::chrono::high_resolution_clock;
@@ -198,8 +202,8 @@ int main()
             tc.image_cts_seal_packed.resize(n_packed_ct);
             for (size_t g = 0; g < n_packed_ct; ++g) {
                 const size_t ch_begin = g * tc.channels_per_ct;
-                Plaintext image_pt_packed = encode_image_coeff_plain_packed(
-                    images_padded, ch_begin, tc.channels_per_ct, Hp, Wp, N, plain_mod_cheetah);
+                Plaintext image_pt_packed =
+                    mini_test::cheetah::encode_image_packed(images_padded, ch_begin, tc.channels_per_ct, Hp, Wp, N, plain_mod_cheetah);
                 encryptor_cheetah.encrypt(image_pt_packed, tc.image_cts_seal_packed[g]);
             }
 
@@ -207,8 +211,8 @@ int main()
             for (size_t ci = 0; ci < Cin; ++ci) {
                 std::vector<uint64_t> image_mod2k(N, 0);
                 for (size_t i = 0; i < one_ch; ++i) image_mod2k[i] = static_cast<uint64_t>(images_padded[ci][i]) & mask_mod2k;
-                scale_by_pow2_inplace(image_mod2k, delta_shift_mod2k, static_cast<int>(log_q_mod2k));
-                Plaintext image_pt_mod2k = vector_to_plaintext_coeff(image_mod2k, N, static_cast<int>(log_q_mod2k));
+                mini_test::mod2k::encode_message_inplace(image_mod2k, delta_shift_mod2k, static_cast<int>(log_q_mod2k));
+                Plaintext image_pt_mod2k = mini_test::mod2k::to_plaintext(image_mod2k, N, static_cast<int>(log_q_mod2k));
                 encrypt_zero_nttfree(context_mod2k, tm.image_cts_mod2k[ci], sk_pt_mod2k, log_q_mod2k);
                 add_plain_to_ct_inplace_mod2k(tm.image_cts_mod2k[ci], image_pt_mod2k, log_q_mod2k);
             }
@@ -246,7 +250,7 @@ int main()
                 tc.image_cts_seal_packed.resize(n_packed_ct);
                 for (size_t g = 0; g < n_packed_ct; ++g) {
                     const size_t ch_begin = g * tc.channels_per_ct;
-                    Plaintext image_pt_packed = encode_image_coeff_plain_packed(
+                    Plaintext image_pt_packed = mini_test::cheetah::encode_image_packed(
                         tile_images, ch_begin, tc.channels_per_ct, tile.in_h, tile.in_w, N, plain_mod_cheetah);
                     encryptor_cheetah.encrypt(image_pt_packed, tc.image_cts_seal_packed[g]);
                 }
@@ -257,8 +261,8 @@ int main()
                     for (size_t i = 0; i < tile_one_ch; ++i) {
                         image_mod2k[i] = static_cast<uint64_t>(tile_images[ci][i]) & mask_mod2k;
                     }
-                    scale_by_pow2_inplace(image_mod2k, delta_shift_mod2k, static_cast<int>(log_q_mod2k));
-                    Plaintext image_pt_mod2k = vector_to_plaintext_coeff(image_mod2k, N, static_cast<int>(log_q_mod2k));
+                    mini_test::mod2k::encode_message_inplace(image_mod2k, delta_shift_mod2k, static_cast<int>(log_q_mod2k));
+                    Plaintext image_pt_mod2k = mini_test::mod2k::to_plaintext(image_mod2k, N, static_cast<int>(log_q_mod2k));
                     encrypt_zero_nttfree(context_mod2k, tm.image_cts_mod2k[ci], sk_pt_mod2k, log_q_mod2k);
                     add_plain_to_ct_inplace_mod2k(tm.image_cts_mod2k[ci], image_pt_mod2k, log_q_mod2k);
                 }
@@ -285,7 +289,7 @@ int main()
             const auto &tc = prepared_tiles_cheetah[ti];
             const auto &tm = prepared_tiles_mod2k[ti];
             std::vector<Ciphertext> outs_pmult;
-            conv2d_pmult_multi_out_packed(
+            mini_test::cheetah::conv2d_multi_out_pmult(
                 tc.image_cts_seal_packed,
                 kernels_flat_co_cin,
                 Co,
@@ -317,10 +321,10 @@ int main()
             }
 
             std::vector<Ciphertext> outs_mod2k;
-            conv2d_rot_cmult_multi_out_mod2k(
+            mini_test::mod2k::conv2d_multi_out_rot_cmult(
                 tm.image_cts_mod2k, kernels_flat_co_cin, Co, Cin, tm.tile_in_h, tm.tile_in_w, KH, KW, log_q_mod2k, outs_mod2k);
             for (size_t co = 0; co < Co; ++co) {
-                remove_unused_coeffs_mod2k_inplace(outs_mod2k[co], tm.valid_indices_mod2k);
+                mini_test::mod2k::remove_unused_inplace(outs_mod2k[co], tm.valid_indices_mod2k);
                 Plaintext scaled;
                 decrypt_nttfree(context_mod2k, outs_mod2k[co], sk_pt_mod2k, scaled, log_q_mod2k);
                 std::vector<int64_t> decoded =
@@ -348,7 +352,7 @@ int main()
         for (int i = 0; i < iters; ++i) {
             for (const auto &tc : prepared_tiles_cheetah) {
                 std::vector<Ciphertext> outs;
-                conv2d_pmult_multi_out_packed(
+                mini_test::cheetah::conv2d_multi_out_pmult(
                     tc.image_cts_seal_packed,
                     kernels_flat_co_cin,
                     Co,
@@ -375,7 +379,7 @@ int main()
         for (int i = 0; i < iters; ++i) {
             for (const auto &tm : prepared_tiles_mod2k) {
                 std::vector<Ciphertext> outs;
-                conv2d_rot_cmult_multi_out_mod2k(
+                mini_test::mod2k::conv2d_multi_out_rot_cmult(
                     tm.image_cts_mod2k, kernels_flat_co_cin, Co, Cin, tm.tile_in_h, tm.tile_in_w, KH, KW, log_q_mod2k, outs);
                 for (size_t co = 0; co < Co; ++co) {
                     global_checksum ^= outs[co].data(0)[0];
