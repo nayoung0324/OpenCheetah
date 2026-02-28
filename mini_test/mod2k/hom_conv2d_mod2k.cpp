@@ -22,8 +22,6 @@ namespace
 {
 #if MOD2K_WRAPPER_BENCH
 using BenchClock = std::chrono::high_resolution_clock;
-static long long g_zero_unused_us = 0;
-static uint64_t g_zero_unused_calls = 0;
 #endif
 
 size_t idx2d(size_t r, size_t c, size_t W)
@@ -43,9 +41,6 @@ void validate_used_indices(const std::vector<size_t> &used_indices, size_t N)
 
 void zero_unused_in_c0_rns(seal::Ciphertext &ct, const std::vector<size_t> &used_indices)
 {
-#if MOD2K_WRAPPER_BENCH
-    const auto t0 = BenchClock::now();
-#endif
     const size_t N = ct.poly_modulus_degree();
     const size_t L = ct.coeff_modulus_size();
     std::vector<size_t> keep = used_indices;
@@ -61,12 +56,6 @@ void zero_unused_in_c0_rns(seal::Ciphertext &ct, const std::vector<size_t> &used
             ptr += N;
         }
     }
-#if MOD2K_WRAPPER_BENCH
-    const auto t1 = BenchClock::now();
-    g_zero_unused_us +=
-        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-    ++g_zero_unused_calls;
-#endif
 }
 
 // Internal fused primitive: rotate one ciphertext, multiply by scalar, and accumulate.
@@ -359,8 +348,6 @@ void run_conv_layer_mod2k(
     long long us_remove_unused = 0;
     long long us_decrypt_decode = 0;
     long long us_compact_scatter = 0;
-    const long long zero_unused_us_before = g_zero_unused_us;
-    const uint64_t zero_unused_calls_before = g_zero_unused_calls;
 #endif
 
     if (meta.stride != 1) {
@@ -564,8 +551,6 @@ void run_conv_layer_mod2k(
     }
 
 #if MOD2K_WRAPPER_BENCH
-    const long long zero_unused_us_delta = g_zero_unused_us - zero_unused_us_before;
-    const uint64_t zero_unused_calls_delta = g_zero_unused_calls - zero_unused_calls_before;
     std::cout << "[mod2k wrapper bench] "
               << "pad_us=" << us_pad
               << ", prep_tile_patch_us=" << us_prepare_tile_patch
@@ -574,10 +559,6 @@ void run_conv_layer_mod2k(
               << ", remove_unused_us=" << us_remove_unused
               << ", decrypt_decode_us=" << us_decrypt_decode
               << ", compact_scatter_us=" << us_compact_scatter
-              << "\n";
-    std::cout << "[mod2k wrapper bench] zero_unused(c0-only): calls=" << zero_unused_calls_delta
-              << ", total_us=" << zero_unused_us_delta
-              << ", avg_us=" << (zero_unused_calls_delta ? (static_cast<double>(zero_unused_us_delta) / zero_unused_calls_delta) : 0.0)
               << "\n";
 #endif
 }
