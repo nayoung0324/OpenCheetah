@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "common/conv.h"
+#include "cheetah/conv_cheetah.h"
 
 namespace mini_test::cheetah
 {
@@ -38,4 +38,3 @@ inline seal::Plaintext encode_kernel_packed(
         kernel_flat_cin, Cin, ch_begin, channels_per_ct, H, W, KH, KW, N, plain_modulus);
 }
 } // namespace mini_test::cheetah
-

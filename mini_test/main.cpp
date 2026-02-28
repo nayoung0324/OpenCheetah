@@ -7,12 +7,12 @@
 #include <random>
 #include <vector>
 
-#include "common/conv.h"
+#include "common/conv_common.h"
 #include "mod2k/decryption.h"
 #include "mod2k/encryption.h"
 #include "cheetah/conv_cheetah.h"
 #include "cheetah/encoding_cheetah.h"
-#include "mod2k/conv_mod2k.h"
+#include "mod2k/hom_conv2d_mod2k.h"
 #include "mod2k/encoding_mod2k.h"
 #include "common/util.h"
 
@@ -179,7 +179,6 @@ int main()
             Conv2DTile tile;
             size_t tile_in_h;
             size_t tile_in_w;
-            std::vector<size_t> valid_indices_mod2k;
             std::vector<Ciphertext> image_cts_mod2k;
         };
 
@@ -194,7 +193,6 @@ int main()
             tc.tile_in_w = Wp;
             tm.tile_in_h = Hp;
             tm.tile_in_w = Wp;
-            tm.valid_indices_mod2k = valid_output_indices_rot_cmult_mod2k(Hp, Wp, KH, KW, N);
             tc.channels_per_ct = N / one_ch;
             tc.out_base_packed = one_ch * (tc.channels_per_ct - 1) + Wp * (KH - 1) + (KW - 1);
 
@@ -236,7 +234,6 @@ int main()
                 tc.tile_in_w = tile.in_w;
                 tm.tile_in_h = tile.in_h;
                 tm.tile_in_w = tile.in_w;
-                tm.valid_indices_mod2k = valid_output_indices_rot_cmult_mod2k(tile.in_h, tile.in_w, KH, KW, N);
                 const size_t tile_one_ch = tile.in_h * tile.in_w;
                 tc.channels_per_ct = N / tile_one_ch;
                 tc.out_base_packed = tile_one_ch * (tc.channels_per_ct - 1) + tile.in_w * (KH - 1) + (KW - 1);
@@ -277,19 +274,25 @@ int main()
                 prepared_tiles_mod2k.push_back(std::move(tm));
             }
         }
-        if (prepared_tiles_cheetah.size() != prepared_tiles_mod2k.size()) {
-            throw std::logic_error("tile preparation mismatch between cheetah and mod2k paths");
-        }
-
         // Correctness check (single run): assemble tile outputs and compare with reference.
         std::vector<std::vector<int64_t>> got_pmult(Co, std::vector<int64_t>(out_h * out_w, 0));
-        std::vector<std::vector<int64_t>> got_mod2k(Co, std::vector<int64_t>(out_h * out_w, 0));
+        std::vector<std::vector<int64_t>> got_mod2k;
 
-        for (size_t ti = 0; ti < prepared_tiles_cheetah.size(); ++ti) {
-            const auto &tc = prepared_tiles_cheetah[ti];
-            const auto &tm = prepared_tiles_mod2k[ti];
+        mini_test::mod2k::Conv2DMeta mod2k_meta;
+        mod2k_meta.poly_degree = N;
+        mod2k_meta.kernel_h = KH;
+        mod2k_meta.kernel_w = KW;
+        mod2k_meta.pad_h = PH;
+        mod2k_meta.pad_w = PW;
+        mod2k_meta.stride = 1;
+        mod2k_meta.log_q = log_q_mod2k;
+        mod2k_meta.delta_shift = delta_shift_mod2k;
+        mini_test::mod2k::run_conv_layer_mod2k(
+            context_mod2k, sk_pt_mod2k, mod2k_meta, images, kernels_flat_co_cin, Co, got_mod2k);
+
+        for (const auto &tc : prepared_tiles_cheetah) {
             std::vector<Ciphertext> outs_pmult;
-            mini_test::cheetah::conv2d_multi_out_pmult(
+            conv2d_pmult_multi_out_packed(
                 tc.image_cts_seal_packed,
                 kernels_flat_co_cin,
                 Co,
@@ -319,24 +322,6 @@ int main()
                 }
                 scatter_output_patch_by_tile(patch, tc.tile, out_w, got_pmult[co]);
             }
-
-            std::vector<Ciphertext> outs_mod2k;
-            mini_test::mod2k::conv2d_multi_out_rot_cmult(
-                tm.image_cts_mod2k, kernels_flat_co_cin, Co, Cin, tm.tile_in_h, tm.tile_in_w, KH, KW, log_q_mod2k, outs_mod2k);
-            for (size_t co = 0; co < Co; ++co) {
-                mini_test::mod2k::remove_unused_inplace(outs_mod2k[co], tm.valid_indices_mod2k);
-                Plaintext scaled;
-                decrypt_nttfree(context_mod2k, outs_mod2k[co], sk_pt_mod2k, scaled, log_q_mod2k);
-                std::vector<int64_t> decoded =
-                    decode_divide_pow2(scaled, delta_shift_mod2k, static_cast<int>(log_q_mod2k), N);
-                const std::vector<int64_t> compact =
-                    compact_coeffs_to_prefix(decoded, tm.valid_indices_mod2k, N);
-                std::vector<int64_t> patch(tm.tile.out_h * tm.tile.out_w, 0);
-                for (size_t i = 0; i < patch.size(); ++i) {
-                    patch[i] = compact[i];
-                }
-                scatter_output_patch_by_tile(patch, tm.tile, out_w, got_mod2k[co]);
-            }
         }
 
         size_t pmult_mismatches = 0;
@@ -352,7 +337,7 @@ int main()
         for (int i = 0; i < iters; ++i) {
             for (const auto &tc : prepared_tiles_cheetah) {
                 std::vector<Ciphertext> outs;
-                mini_test::cheetah::conv2d_multi_out_pmult(
+                conv2d_pmult_multi_out_packed(
                     tc.image_cts_seal_packed,
                     kernels_flat_co_cin,
                     Co,
@@ -379,7 +364,7 @@ int main()
         for (int i = 0; i < iters; ++i) {
             for (const auto &tm : prepared_tiles_mod2k) {
                 std::vector<Ciphertext> outs;
-                mini_test::mod2k::conv2d_multi_out_rot_cmult(
+                mini_test::mod2k::conv2d_rot_cmult_multi_out_mod2k(
                     tm.image_cts_mod2k, kernels_flat_co_cin, Co, Cin, tm.tile_in_h, tm.tile_in_w, KH, KW, log_q_mod2k, outs);
                 for (size_t co = 0; co < Co; ++co) {
                     global_checksum ^= outs[co].data(0)[0];

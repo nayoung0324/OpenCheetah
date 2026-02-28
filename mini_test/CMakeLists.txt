@@ -12,6 +12,8 @@ find_package(SEAL 3.7 REQUIRED)
 add_executable(mini_seal
   main.cpp
   common/conv.cpp
+  cheetah/conv_cheetah.cpp
+  mod2k/hom_conv2d_mod2k.cpp
   common/util.cpp
   mod2k/encryption.cpp
   mod2k/decryption.cpp
