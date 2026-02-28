@@ -343,7 +343,9 @@ void run_conv_layer_mod2k(
 #if MOD2K_WRAPPER_BENCH
     long long us_pad = 0;
     long long us_prepare_tile_patch = 0;
-    long long us_encode_encrypt = 0;
+    long long us_encode = 0;
+    long long us_encrypt_zero = 0;
+    long long us_add_plain = 0;
     long long us_core_conv = 0;
     long long us_remove_unused = 0;
     long long us_decrypt_decode = 0;
@@ -434,11 +436,23 @@ void run_conv_layer_mod2k(
             }
             encode_message_inplace(coeffs, meta.delta_shift, static_cast<int>(meta.log_q));
             seal::Plaintext pt = to_plaintext(coeffs, meta.poly_degree, static_cast<int>(meta.log_q));
-            encrypt_zero_nttfree(context, tp.image_cts[ci], sk_pt, meta.log_q);
-            add_plain_to_ct_inplace_mod2k(tp.image_cts[ci], pt, meta.log_q);
 #if MOD2K_WRAPPER_BENCH
             const auto t_enc1 = BenchClock::now();
-            us_encode_encrypt += std::chrono::duration_cast<std::chrono::microseconds>(t_enc1 - t_enc0).count();
+            us_encode += std::chrono::duration_cast<std::chrono::microseconds>(t_enc1 - t_enc0).count();
+
+            const auto t_ez0 = BenchClock::now();
+#endif
+            encrypt_zero_nttfree(context, tp.image_cts[ci], sk_pt, meta.log_q);
+#if MOD2K_WRAPPER_BENCH
+            const auto t_ez1 = BenchClock::now();
+            us_encrypt_zero += std::chrono::duration_cast<std::chrono::microseconds>(t_ez1 - t_ez0).count();
+
+            const auto t_ap0 = BenchClock::now();
+#endif
+            add_plain_to_ct_inplace_mod2k(tp.image_cts[ci], pt, meta.log_q);
+#if MOD2K_WRAPPER_BENCH
+            const auto t_ap1 = BenchClock::now();
+            us_add_plain += std::chrono::duration_cast<std::chrono::microseconds>(t_ap1 - t_ap0).count();
 #endif
         }
         prepared_tiles.push_back(std::move(tp));
@@ -484,11 +498,23 @@ void run_conv_layer_mod2k(
                 }
                 encode_message_inplace(coeffs, meta.delta_shift, static_cast<int>(meta.log_q));
                 seal::Plaintext pt = to_plaintext(coeffs, meta.poly_degree, static_cast<int>(meta.log_q));
-                encrypt_zero_nttfree(context, tp.image_cts[ci], sk_pt, meta.log_q);
-                add_plain_to_ct_inplace_mod2k(tp.image_cts[ci], pt, meta.log_q);
 #if MOD2K_WRAPPER_BENCH
                 const auto t_enc1 = BenchClock::now();
-                us_encode_encrypt += std::chrono::duration_cast<std::chrono::microseconds>(t_enc1 - t_enc0).count();
+                us_encode += std::chrono::duration_cast<std::chrono::microseconds>(t_enc1 - t_enc0).count();
+
+                const auto t_ez0 = BenchClock::now();
+#endif
+                encrypt_zero_nttfree(context, tp.image_cts[ci], sk_pt, meta.log_q);
+#if MOD2K_WRAPPER_BENCH
+                const auto t_ez1 = BenchClock::now();
+                us_encrypt_zero += std::chrono::duration_cast<std::chrono::microseconds>(t_ez1 - t_ez0).count();
+
+                const auto t_ap0 = BenchClock::now();
+#endif
+                add_plain_to_ct_inplace_mod2k(tp.image_cts[ci], pt, meta.log_q);
+#if MOD2K_WRAPPER_BENCH
+                const auto t_ap1 = BenchClock::now();
+                us_add_plain += std::chrono::duration_cast<std::chrono::microseconds>(t_ap1 - t_ap0).count();
 #endif
             }
             prepared_tiles.push_back(std::move(tp));
@@ -551,10 +577,15 @@ void run_conv_layer_mod2k(
     }
 
 #if MOD2K_WRAPPER_BENCH
+    const long long us_encrypt = us_encrypt_zero + us_add_plain;
     std::cout << "[mod2k wrapper bench] "
               << "pad_us=" << us_pad
               << ", prep_tile_patch_us=" << us_prepare_tile_patch
-              << ", encode_encrypt_us=" << us_encode_encrypt
+              << ", encode_us=" << us_encode
+              << ", encrypt_us=" << us_encrypt
+              << ", encrypt_zero_us=" << us_encrypt_zero
+              << ", add_plain_us=" << us_add_plain
+              << ", encrypt_no_zero_us=" << us_add_plain
               << ", core_conv_us=" << us_core_conv
               << ", remove_unused_us=" << us_remove_unused
               << ", decrypt_decode_us=" << us_decrypt_decode
