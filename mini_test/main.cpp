@@ -31,7 +31,9 @@ int main()
     constexpr size_t PW = (KW - 1) / 2;
     constexpr uint64_t log_q_cheetah = 54;
     constexpr uint64_t log_q_mod2k = 60;
-    constexpr int delta_shift = 20;
+    constexpr int plain_bits_cheetah = 20;
+    constexpr int plain_bits_mod2k = 28;
+    constexpr int delta_shift_mod2k = static_cast<int>(log_q_mod2k) - plain_bits_mod2k; // ~= log2(q/t)
 
     const std::vector<BenchCase> cases = {
         { 224, 64, 64, 2 },
@@ -47,10 +49,11 @@ int main()
         { 4, 512, 512, 3 },
     };
 
+    // 치타 parameters set : N=2048, q=2^54, p=2^20
     EncryptionParameters parms_cheetah(scheme_type::bfv);
     parms_cheetah.set_poly_modulus_degree(N);
     parms_cheetah.set_coeff_modulus(CoeffModulus::Create(N, { static_cast<int>(log_q_cheetah) }));
-    parms_cheetah.set_plain_modulus(PlainModulus::Batching(N, 19));
+    parms_cheetah.set_plain_modulus(PlainModulus::Batching(N, plain_bits_cheetah));
     SEALContext context_cheetah(parms_cheetah);
     if (!context_cheetah.parameters_set()) {
         std::cerr << "SEAL cheetah-context parameter error: " << context_cheetah.parameter_error_name()
@@ -58,10 +61,11 @@ int main()
         return 2;
     }
 
+    // mod2k parameters set : N=2048, q=2^60, p=2^28 => delta=2^(60-28)=2^32
     EncryptionParameters parms_mod2k(scheme_type::bfv);
     parms_mod2k.set_poly_modulus_degree(N);
     parms_mod2k.set_coeff_modulus(CoeffModulus::Create(N, { static_cast<int>(log_q_mod2k) }));
-    parms_mod2k.set_plain_modulus(PlainModulus::Batching(N, 19));
+    parms_mod2k.set_plain_modulus(PlainModulus::Batching(N, plain_bits_mod2k));
     SEALContext context_mod2k(parms_mod2k, true, sec_level_type::none);
     if (!context_mod2k.parameters_set()) {
         std::cerr << "SEAL mod2k-context parameter error: " << context_mod2k.parameter_error_name()
@@ -72,6 +76,7 @@ int main()
     const uint64_t plain_mod_cheetah = parms_cheetah.plain_modulus().value();
     const uint64_t mask_mod2k = (1ULL << log_q_mod2k) - 1ULL;
 
+    // 치타 키 생성
     KeyGenerator keygen_cheetah(context_cheetah);
     SecretKey sk_cheetah = keygen_cheetah.secret_key();
     PublicKey pk_cheetah;
@@ -80,6 +85,7 @@ int main()
     Evaluator evaluator_cheetah(context_cheetah);
     Decryptor decryptor_cheetah(context_cheetah, sk_cheetah);
 
+    // mod2k 키 생성
     KeyGenerator keygen_mod2k(context_mod2k);
     SecretKey sk_mod2k = keygen_mod2k.secret_key();
     const Plaintext &sk_pt_mod2k = sk_mod2k.data();
@@ -90,7 +96,9 @@ int main()
 
     std::cout << "[Latency compare: Cheetah PMult vs _mod2k rotate+CMult]\n";
     std::cout << "N=" << N << ", K=" << KH << "x" << KW
-              << ", q_cheetah=" << log_q_cheetah << ", q_mod2k=" << log_q_mod2k << "\n\n";
+              << ", q_cheetah=" << log_q_cheetah << ", p_cheetah_bits=" << plain_bits_cheetah
+              << ", q_mod2k=" << log_q_mod2k << ", p_mod2k_bits=" << plain_bits_mod2k
+              << ", delta_shift_mod2k=" << delta_shift_mod2k << "\n\n";
 
     for (const auto &bc : cases) {
         const size_t H = bc.hw;
@@ -185,7 +193,7 @@ int main()
             for (size_t ci = 0; ci < Cin; ++ci) {
                 std::vector<uint64_t> image_mod2k(N, 0);
                 for (size_t i = 0; i < one_ch; ++i) image_mod2k[i] = static_cast<uint64_t>(images_padded[ci][i]) & mask_mod2k;
-                scale_by_pow2_inplace(image_mod2k, delta_shift, static_cast<int>(log_q_mod2k));
+                scale_by_pow2_inplace(image_mod2k, delta_shift_mod2k, static_cast<int>(log_q_mod2k));
                 Plaintext image_pt_mod2k = vector_to_plaintext_coeff(image_mod2k, N, static_cast<int>(log_q_mod2k));
                 encrypt_zero_nttfree(context_mod2k, tp.image_cts_mod2k[ci], sk_pt_mod2k, log_q_mod2k);
                 add_plain_to_ct_inplace_mod2k(tp.image_cts_mod2k[ci], image_pt_mod2k, log_q_mod2k);
@@ -229,7 +237,7 @@ int main()
                     for (size_t i = 0; i < tile_one_ch; ++i) {
                         image_mod2k[i] = static_cast<uint64_t>(tile_images[ci][i]) & mask_mod2k;
                     }
-                    scale_by_pow2_inplace(image_mod2k, delta_shift, static_cast<int>(log_q_mod2k));
+                    scale_by_pow2_inplace(image_mod2k, delta_shift_mod2k, static_cast<int>(log_q_mod2k));
                     Plaintext image_pt_mod2k = vector_to_plaintext_coeff(image_mod2k, N, static_cast<int>(log_q_mod2k));
                     encrypt_zero_nttfree(context_mod2k, tp.image_cts_mod2k[ci], sk_pt_mod2k, log_q_mod2k);
                     add_plain_to_ct_inplace_mod2k(tp.image_cts_mod2k[ci], image_pt_mod2k, log_q_mod2k);
@@ -286,7 +294,7 @@ int main()
                 Plaintext scaled;
                 decrypt_nttfree(context_mod2k, outs_mod2k[co], sk_pt_mod2k, scaled, log_q_mod2k);
                 std::vector<int64_t> decoded =
-                    decode_divide_pow2(scaled, delta_shift, static_cast<int>(log_q_mod2k), N);
+                    decode_divide_pow2(scaled, delta_shift_mod2k, static_cast<int>(log_q_mod2k), N);
                 std::vector<int64_t> patch(tp.tile.out_h * tp.tile.out_w, 0);
                 for (size_t r = 0; r < tp.tile.out_h; ++r) {
                     for (size_t c = 0; c < tp.tile.out_w; ++c) {
