@@ -2,6 +2,8 @@
 
 #include <cmath>
 #include <algorithm>
+#include <chrono>
+#include <iostream>
 #include <stdexcept>
 
 #include "common/conv_common.h"
@@ -12,8 +14,18 @@
 
 namespace mini_test::mod2k
 {
+#ifndef MOD2K_WRAPPER_BENCH
+#define MOD2K_WRAPPER_BENCH 0
+#endif
+
 namespace
 {
+#if MOD2K_WRAPPER_BENCH
+using BenchClock = std::chrono::high_resolution_clock;
+static long long g_zero_unused_us = 0;
+static uint64_t g_zero_unused_calls = 0;
+#endif
+
 size_t idx2d(size_t r, size_t c, size_t W)
 {
     return r * W + c;
@@ -31,6 +43,9 @@ void validate_used_indices(const std::vector<size_t> &used_indices, size_t N)
 
 void zero_unused_in_c0_rns(seal::Ciphertext &ct, const std::vector<size_t> &used_indices)
 {
+#if MOD2K_WRAPPER_BENCH
+    const auto t0 = BenchClock::now();
+#endif
     const size_t N = ct.poly_modulus_degree();
     const size_t L = ct.coeff_modulus_size();
     std::vector<size_t> keep = used_indices;
@@ -46,6 +61,12 @@ void zero_unused_in_c0_rns(seal::Ciphertext &ct, const std::vector<size_t> &used
             ptr += N;
         }
     }
+#if MOD2K_WRAPPER_BENCH
+    const auto t1 = BenchClock::now();
+    g_zero_unused_us +=
+        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+    ++g_zero_unused_calls;
+#endif
 }
 
 // Internal fused primitive: rotate one ciphertext, multiply by scalar, and accumulate.
@@ -200,6 +221,8 @@ void rotate_multiply_scalar_add_ct_mod2k(
     rotate_multiply_scalar_add_ct_mod2k_impl(input_ct, shift, a, log_q, acc_ct, rotated);
 }
 
+// Cin개 ciphertext 각각에 대해 conv2d_rot_cmult_accum_mod2k을 수행한 뒤 결과를 모두 더해서 하나의 ciphertext로 반환
+// 즉 Cout = 1
 void conv2d_rot_cmult_accum_multi_in_mod2k(
     const std::vector<seal::Ciphertext> &input_cts,
     const std::vector<int64_t> &kernel_flat_cin,
@@ -236,6 +259,8 @@ void conv2d_rot_cmult_accum_multi_in_mod2k(
     }
 }
 
+// 이건 안 쓰는거
+/*
 void conv2d_rot_cmult_accum_multi_in_packed_mod2k(
     const std::vector<seal::Ciphertext> &input_cts_packed,
     const std::vector<int64_t> &kernel_flat_cin,
@@ -287,6 +312,7 @@ void conv2d_rot_cmult_accum_multi_in_packed_mod2k(
         }
     }
 }
+*/
 
 void conv2d_rot_cmult_multi_out_mod2k(
     const std::vector<seal::Ciphertext> &input_cts,
@@ -325,6 +351,17 @@ void run_conv_layer_mod2k(
     size_t Co,
     std::vector<std::vector<int64_t>> &output_maps)
 {
+#if MOD2K_WRAPPER_BENCH
+    long long us_pad = 0;
+    long long us_prepare = 0;
+    long long us_core_conv = 0;
+    long long us_remove_unused = 0;
+    long long us_decrypt_decode = 0;
+    long long us_compact_scatter = 0;
+    const long long zero_unused_us_before = g_zero_unused_us;
+    const uint64_t zero_unused_calls_before = g_zero_unused_calls;
+#endif
+
     if (meta.stride != 1) {
         throw std::invalid_argument("run_conv_layer_mod2k currently supports stride=1 only");
     }
@@ -364,7 +401,14 @@ void run_conv_layer_mod2k(
     const size_t out_w = Wp - meta.kernel_w + 1;
     const uint64_t mask = (1ULL << meta.log_q) - 1ULL;
 
+#if MOD2K_WRAPPER_BENCH
+    const auto t_pad0 = BenchClock::now();
+#endif
     auto images_padded = zero_pad_same(input_images, H, W, meta.pad_h, meta.pad_w);
+#if MOD2K_WRAPPER_BENCH
+    const auto t_pad1 = BenchClock::now();
+    us_pad += std::chrono::duration_cast<std::chrono::microseconds>(t_pad1 - t_pad0).count();
+#endif
     output_maps.assign(Co, std::vector<int64_t>(out_h * out_w, 0));
 
     struct TilePrepared
@@ -378,6 +422,9 @@ void run_conv_layer_mod2k(
     std::vector<TilePrepared> prepared_tiles;
 
     const size_t one_ch = Hp * Wp;
+#if MOD2K_WRAPPER_BENCH
+    const auto t_prep0 = BenchClock::now();
+#endif
     if (one_ch <= meta.poly_degree) {
         TilePrepared tp;
         tp.tile = { 0, 0, out_h, out_w, Hp, Wp };
@@ -421,9 +468,16 @@ void run_conv_layer_mod2k(
             prepared_tiles.push_back(std::move(tp));
         }
     }
+#if MOD2K_WRAPPER_BENCH
+    const auto t_prep1 = BenchClock::now();
+    us_prepare += std::chrono::duration_cast<std::chrono::microseconds>(t_prep1 - t_prep0).count();
+#endif
 
     for (const auto &tp : prepared_tiles) {
         std::vector<seal::Ciphertext> out_cts;
+#if MOD2K_WRAPPER_BENCH
+        const auto t_core0 = BenchClock::now();
+#endif
         conv2d_rot_cmult_multi_out_mod2k(
             tp.image_cts,
             kernels_flat_co_cin,
@@ -435,13 +489,32 @@ void run_conv_layer_mod2k(
             meta.kernel_w,
             meta.log_q,
             out_cts);
+#if MOD2K_WRAPPER_BENCH
+        const auto t_core1 = BenchClock::now();
+        us_core_conv += std::chrono::duration_cast<std::chrono::microseconds>(t_core1 - t_core0).count();
+#endif
 
         for (size_t co = 0; co < Co; ++co) {
+#if MOD2K_WRAPPER_BENCH
+            const auto t_rm0 = BenchClock::now();
+#endif
             remove_unused_coeffs_mod2k_inplace(out_cts[co], tp.valid_indices);
+#if MOD2K_WRAPPER_BENCH
+            const auto t_rm1 = BenchClock::now();
+            us_remove_unused += std::chrono::duration_cast<std::chrono::microseconds>(t_rm1 - t_rm0).count();
+
+            const auto t_dec0 = BenchClock::now();
+#endif
             seal::Plaintext scaled;
             decrypt_nttfree(context, out_cts[co], sk_pt, scaled, meta.log_q);
             std::vector<int64_t> decoded =
                 decode_divide_pow2(scaled, meta.delta_shift, static_cast<int>(meta.log_q), meta.poly_degree);
+#if MOD2K_WRAPPER_BENCH
+            const auto t_dec1 = BenchClock::now();
+            us_decrypt_decode += std::chrono::duration_cast<std::chrono::microseconds>(t_dec1 - t_dec0).count();
+
+            const auto t_post0 = BenchClock::now();
+#endif
             const auto compact = compact_coeffs_to_prefix(decoded, tp.valid_indices, meta.poly_degree);
 
             std::vector<int64_t> patch(tp.tile.out_h * tp.tile.out_w, 0);
@@ -449,7 +522,28 @@ void run_conv_layer_mod2k(
                 patch[i] = compact[i];
             }
             scatter_output_patch_by_tile(patch, tp.tile, out_w, output_maps[co]);
+#if MOD2K_WRAPPER_BENCH
+            const auto t_post1 = BenchClock::now();
+            us_compact_scatter += std::chrono::duration_cast<std::chrono::microseconds>(t_post1 - t_post0).count();
+#endif
         }
     }
+
+#if MOD2K_WRAPPER_BENCH
+    const long long zero_unused_us_delta = g_zero_unused_us - zero_unused_us_before;
+    const uint64_t zero_unused_calls_delta = g_zero_unused_calls - zero_unused_calls_before;
+    std::cout << "[mod2k wrapper bench] "
+              << "pad_us=" << us_pad
+              << ", prep_us=" << us_prepare
+              << ", core_conv_us=" << us_core_conv
+              << ", remove_unused_us=" << us_remove_unused
+              << ", decrypt_decode_us=" << us_decrypt_decode
+              << ", compact_scatter_us=" << us_compact_scatter
+              << "\n";
+    std::cout << "[mod2k wrapper bench] zero_unused(c0-only): calls=" << zero_unused_calls_delta
+              << ", total_us=" << zero_unused_us_delta
+              << ", avg_us=" << (zero_unused_calls_delta ? (static_cast<double>(zero_unused_us_delta) / zero_unused_calls_delta) : 0.0)
+              << "\n";
+#endif
 }
 } // namespace mini_test::mod2k

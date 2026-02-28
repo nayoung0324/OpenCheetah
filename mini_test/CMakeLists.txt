@@ -4,6 +4,7 @@ project(mini_seal CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+option(MOD2K_WRAPPER_BENCH "Enable timing breakdown in mod2k wrapper (0/1)" ON)
 
 # OpenCheetah deps prefix (? repo ?? build/)
 # cmake -DCMAKE_PREFIX_PATH=... ? ???? ?
@@ -20,6 +21,7 @@ add_executable(mini_seal
 )
 target_link_libraries(mini_seal PRIVATE SEAL::seal)
 target_include_directories(mini_seal PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(mini_seal PRIVATE MOD2K_WRAPPER_BENCH=$<BOOL:${MOD2K_WRAPPER_BENCH}>)
 
 add_executable(mini_seal_compare
   compare_with_seal_main.cpp
