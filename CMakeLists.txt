@@ -40,5 +40,10 @@ macro (add_network_cheetah _name)
 endmacro()
 
 add_network_cheetah(resnet50)
+add_network_cheetah(resnet18)
 add_network_cheetah(sqnet)
 add_network_cheetah(densenet121)
+
+# Small BFV unit test for SEAL multiply_plain correctness
+add_executable(test_multiply_plain tests/test_multiply_plain.cpp)
+target_link_libraries(test_multiply_plain SEAL::seal)
