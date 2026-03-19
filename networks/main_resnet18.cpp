@@ -310,8 +310,8 @@ int main(int argc, char **argv) {
   ArgMax(1, kNumClasses, logits, pred);
   EndComputation();
 
+  auto label = funcReconstruct2PCCons(pred[0], CLIENT);
   if (party == CLIENT) {
-    auto label = funcReconstruct2PCCons(pred[0], CLIENT);
     cout << "dummy ResNet18 predicted label=" << label << endl;
 
     vector<pair<double, int>> topk;
