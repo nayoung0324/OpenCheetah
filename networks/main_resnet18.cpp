@@ -123,6 +123,10 @@ Tensor4D relu_tensor(const Tensor4D &input) {
   return output;
 }
 
+void scale_down_tensor(Tensor4D &tensor, int sf) {
+  ScaleDown(tensor.n * tensor.h * tensor.w * tensor.c, tensor.data, sf);
+}
+
 Tensor4D conv2d(const Tensor4D &input, int out_channels, int kernel, int stride,
                 int padding) {
   Tensor4D output = make_tensor4d(
@@ -147,7 +151,7 @@ Tensor4D batch_norm(const Tensor4D &input) {
   std::copy(input.data,
             input.data + static_cast<size_t>(input.n) * input.h * input.w * input.c,
             scaled.data);
-  ScaleDown4(input.n, input.h, input.w, input.c, scaled.data, kScale);
+  scale_down_tensor(scaled, kScale);
 
   BatchNorm(input.n, input.h, input.w, input.c, scaled.data, scale, bias,
             output.data);
