@@ -140,12 +140,19 @@ Tensor4D conv2d(const Tensor4D &input, int out_channels, int kernel, int stride,
 
 Tensor4D batch_norm(const Tensor4D &input) {
   Tensor4D output = make_tensor4d(input.n, input.h, input.w, input.c);
+  Tensor4D scaled = make_tensor4d(input.n, input.h, input.w, input.c);
   Secret *scale = make_model_1d(input.c, true, false);
   Secret *bias = make_model_1d(input.c, false, true);
 
-  BatchNorm(input.n, input.h, input.w, input.c, input.data, scale, bias,
+  std::copy(input.data,
+            input.data + static_cast<size_t>(input.n) * input.h * input.w * input.c,
+            scaled.data);
+  ScaleDown4(input.n, input.h, input.w, input.c, scaled.data, kScale);
+
+  BatchNorm(input.n, input.h, input.w, input.c, scaled.data, scale, bias,
             output.data);
 
+  free_tensor(scaled);
   ClearMemSecret1(input.c, scale);
   ClearMemSecret1(input.c, bias);
   return output;
