@@ -45,11 +45,11 @@ int64_t encode_fixed(double value) {
 int64_t patterned_value(size_t idx, int owner) {
   if (owner == CLIENT) {
     static const int64_t values[] = {
-        0, encode_fixed(0.125), encode_fixed(0.25), encode_fixed(0.375)};
+        0, 1, -1, 2};
     return values[idx % 4];
   }
 
-  static const int64_t values[] = {encode_fixed(-0.125), 0, encode_fixed(0.125)};
+  static const int64_t values[] = {-1, 0, 1};
   return values[idx % 3];
 }
 
