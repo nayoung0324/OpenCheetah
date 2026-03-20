@@ -42,18 +42,7 @@ int64_t encode_fixed(double value) {
   return static_cast<int64_t>(std::llround(value * (1LL << kScale)));
 }
 
-int64_t patterned_value(size_t idx, int owner) {
-  if (owner == CLIENT) {
-    static const int64_t values[] = {0, 1, -1, 2};
-    return values[idx % 4];
-  }
-
-  static const int64_t values[] = {-1, 0, 1};
-  return values[idx % 3];
-}
-
-void fill_private_values(Secret *dst, size_t size, int owner, bool is_scale = false,
-                         bool is_bias = false) {
+void read_private_values(Secret *dst, size_t size, int owner) {
   for (size_t i = 0; i < size; ++i) {
     if (party != owner) {
       dst[i] = 0;
@@ -61,19 +50,9 @@ void fill_private_values(Secret *dst, size_t size, int owner, bool is_scale = fa
     }
 
     int64_t plain = 0;
-    if (is_scale) {
-      plain = encode_fixed(1.0);
-    } else if (is_bias) {
-      plain = 0;
-    } else {
-      plain = patterned_value(i, owner);
-    }
-
-    // funcSSCons places the clear value on SERVER and 0 on CLIENT.
-    // That is correct for server-owned model parameters, but wrong for
-    // client-owned private inputs.
+    cin >> plain;
     if (owner == SERVER) {
-      dst[i] = funcSSCons(plain);
+      dst[i] = static_cast<Secret>(plain);
     } else {
       dst[i] = static_cast<Secret>(plain);
     }
@@ -93,26 +72,27 @@ void free_tensor(Tensor4D &tensor) {
 
 Tensor4D make_private_input() {
   Tensor4D input = make_tensor4d(1, 224, 224, 3);
-  fill_private_values(input.data, static_cast<size_t>(input.n) * input.h * input.w * input.c,
+  read_private_values(input.data,
+                      static_cast<size_t>(input.n) * input.h * input.w * input.c,
                       CLIENT);
   return input;
 }
 
-Secret *make_model_1d(int size, bool is_scale = false, bool is_bias = false) {
+Secret *make_model_1d(int size) {
   Secret *arr = make_array<Secret>(size);
-  fill_private_values(arr, size, SERVER, is_scale, is_bias);
+  read_private_values(arr, size, SERVER);
   return arr;
 }
 
 Secret *make_model_2d(int d1, int d2) {
   Secret *arr = make_array<Secret>(d1, d2);
-  fill_private_values(arr, static_cast<size_t>(d1) * d2, SERVER);
+  read_private_values(arr, static_cast<size_t>(d1) * d2, SERVER);
   return arr;
 }
 
 Secret *make_model_4d(int d1, int d2, int d3, int d4) {
   Secret *arr = make_array<Secret>(d1, d2, d3, d4);
-  fill_private_values(arr, static_cast<size_t>(d1) * d2 * d3 * d4, SERVER);
+  read_private_values(arr, static_cast<size_t>(d1) * d2 * d3 * d4, SERVER);
   return arr;
 }
 
@@ -152,8 +132,8 @@ Tensor4D conv2d(const Tensor4D &input, int out_channels, int kernel, int stride,
 Tensor4D batch_norm(const Tensor4D &input) {
   Tensor4D output = make_tensor4d(input.n, input.h, input.w, input.c);
   Tensor4D scaled = make_tensor4d(input.n, input.h, input.w, input.c);
-  Secret *scale = make_model_1d(input.c, true, false);
-  Secret *bias = make_model_1d(input.c, false, true);
+  Secret *scale = make_model_1d(input.c);
+  Secret *bias = make_model_1d(input.c);
 
   std::copy(input.data,
             input.data + static_cast<size_t>(input.n) * input.h * input.w * input.c,
@@ -276,7 +256,7 @@ Secret *flatten_nhwc_to_2d(const Tensor4D &input) {
 
 Secret *fc_logits(const Secret *input, int in_dim, int out_dim) {
   Secret *weights = make_model_2d(in_dim, out_dim);
-  Secret *bias = make_model_1d(out_dim, false, true);
+  Secret *bias = make_model_1d(out_dim);
   Secret *logits = make_array<Secret>(1, out_dim);
 
   MatMul2D(1, in_dim, out_dim, input, weights, logits, false);
@@ -307,7 +287,7 @@ int main(int argc, char **argv) {
 
   assert(party == SERVER || party == CLIENT);
 
-  cerr << "Generating dummy input/model for ResNet18 benchmark..." << endl;
+  cerr << "Loading ResNet18 input/model from stdin..." << endl;
   Tensor4D input = make_private_input();
 
   StartComputation();
