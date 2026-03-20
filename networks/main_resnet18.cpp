@@ -44,8 +44,7 @@ int64_t encode_fixed(double value) {
 
 int64_t patterned_value(size_t idx, int owner) {
   if (owner == CLIENT) {
-    static const int64_t values[] = {
-        0, 1, -1, 2};
+    static const int64_t values[] = {0, 1, -1, 2};
     return values[idx % 4];
   }
 
@@ -69,7 +68,15 @@ void fill_private_values(Secret *dst, size_t size, int owner, bool is_scale = fa
     } else {
       plain = patterned_value(i, owner);
     }
-    dst[i] = funcSSCons(plain);
+
+    // funcSSCons places the clear value on SERVER and 0 on CLIENT.
+    // That is correct for server-owned model parameters, but wrong for
+    // client-owned private inputs.
+    if (owner == SERVER) {
+      dst[i] = funcSSCons(plain);
+    } else {
+      dst[i] = static_cast<Secret>(plain);
+    }
   }
 }
 
